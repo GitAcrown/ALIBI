@@ -663,6 +663,23 @@ class EvidenceBulletinView(discord.ui.LayoutView):
                 "-# Le dossier classifié épinglé a été mis à jour automatiquement."
             ),
         ]
+        # Bouton-lien vers le menu principal (jump) — uniquement si on connaît le message.
+        if case.guild_id and case.channel_id and case.announce_message_id:
+            dossier_url = (
+                f"https://discord.com/channels/{case.guild_id}/"
+                f"{case.channel_id}/{case.announce_message_id}"
+            )
+            children += [
+                discord.ui.Separator(),
+                discord.ui.ActionRow(
+                    discord.ui.Button(
+                        style=discord.ButtonStyle.link,
+                        label="Voir le dossier",
+                        url=dossier_url,
+                        emoji=_btn_emoji(E.FILE),
+                    )
+                ),
+            ]
         self.add_item(make_container(*children))
 
 

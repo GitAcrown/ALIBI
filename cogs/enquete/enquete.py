@@ -661,7 +661,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
 
     @app_commands.command(
         name="interroger",
-        description="Interroge un suspect. Sans argument : ouvre le menu.",
+        description="Interroge un suspect (1 crédit de moins que le nb de suspects). Sans arg. : menu.",
     )
     @app_commands.describe(
         suspect="Suspect à interroger (laisse vide pour ouvrir le menu).",
