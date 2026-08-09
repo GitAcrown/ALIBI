@@ -47,10 +47,22 @@ identifier le coupable SANS deviner, via au moins 3 recoupements distincts (pas 
 détails isolés) — la partie dure plusieurs heures, la déduction doit demander un vrai travail \
 d'enquête collectif, pas 5 minutes de lecture. Les key_evidence_ids et facts liés soutiennent réellement cette déduction ; \
 true_timeline_summary n'introduit pas une vérité impossible à découvrir via facts/preuves. \
-Vérifie aussi qu'AUCUN suspect unique ne détient à lui seul (dans son propre known_fact_ids) TOUS \
-les éléments de ce chemin de déduction — le recoupement décisif doit exiger les témoignages d'AU \
-MOINS DEUX suspects différents, sinon un seul joueur peut résoudre l'affaire seul et les autres \
-n'ont aucune raison de partager leurs informations. ok=false si un seul suspect suffit.
+Vérifie aussi qu'il existe AU MOINS UN élément décisif du chemin de déduction qui ne figure PAS \
+dans le known_fact_ids d'un seul suspect isolé mais nécessite de recouper les témoignages d'AU \
+MOINS DEUX suspects différents (ex. l'alibi de A n'est contredit que par un fact que seul B \
+connaît, ou une preuve publique ne prend son sens qu'avec un fact détenu par B) — ça donne un \
+vrai intérêt à ce que les joueurs se partagent leurs découvertes. Sois PRAGMATIQUE ici : ok=false \
+UNIQUEMENT si un unique suspect détient dans son seul known_fact_ids la TOTALITÉ du chemin de \
+déduction, permettant de conclure sans recouper personne d'autre. Dans le doute, ou si le \
+recoupement à 2+ suspects existe mais n'est pas parfaitement optimal, ok=true — ce point ne doit \
+PAS être le prétexte à rejeter un dossier par ailleurs solide sur un détail de répartition ; \
+signale plutôt la faiblesse en note même quand ok=true, pour la garder à l'esprit sans bloquer.
+   Exemple ok=true : le fait que le coupable ait menti sur son alibi n'est démontrable qu'en \
+croisant le témoignage du suspect B (qui l'a vu ailleurs) ET une preuve publique (qui situe le \
+lieu du mensonge) — deux sources distinctes, aucune détenue seule par un suspect unique.
+   Exemple ok=false : le suspect B détient, à lui seul dans son known_fact_ids, à la fois \
+l'alibi contredit du coupable, le mobile, ET la preuve qui l'incrimine — B seul suffit à tout \
+résoudre sans qu'aucun autre suspect n'ait d'info utile.
 
 5) casting_fonctionnel — Au moins un suspect est lié à l'affaire par sa FONCTION sur le lieu \
 (personnel/autorité présent de par son poste — concierge, agent de sécurité, employé de \

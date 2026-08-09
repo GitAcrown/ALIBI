@@ -310,6 +310,52 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     async def _before_resolution_loop(self) -> None:
         await self.bot.wait_until_ready()
 
+    async def _ensure_enqueteur_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        """Résout le rôle Enquêteur : ID .env si présent, sinon rôle nommé (créé au besoin)."""
+        override_id = config.notif_role_id(getattr(self.bot, "config", None))
+        if override_id is not None:
+            role = guild.get_role(override_id)
+            if role is None:
+                logger.warning(
+                    "NOTIF_ROLE_ID=%s introuvable sur %s — ping notif ignoré.",
+                    override_id, guild.id,
+                )
+            return role
+
+        name = config.ENQUETEUR_ROLE_NAME
+        existing = discord.utils.get(guild.roles, name=name)
+        if existing is not None:
+            # Garantit que le ping au lancement notifie bien les abonnés.
+            if not existing.mentionable:
+                try:
+                    await existing.edit(
+                        mentionable=True,
+                        reason="ALIBI · activer les mentions /notif",
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.warning(
+                        "Rôle « %s » trouvé mais non mentionnable (édition refusée) sur %s",
+                        name, guild.id,
+                    )
+            return existing
+
+        try:
+            return await guild.create_role(
+                name=name,
+                mentionable=True,
+                reason="ALIBI · rôle auto-assignable via /notif",
+            )
+        except discord.Forbidden:
+            logger.warning(
+                "Pas la permission de créer le rôle « %s » sur %s — "
+                "il faut « Gérer les rôles ».",
+                name, guild.id,
+            )
+            return None
+        except discord.HTTPException:
+            logger.exception("Échec création du rôle « %s » sur %s", name, guild.id)
+            return None
+
     async def _publish_dossier_menu(
         self,
         channel: discord.abc.Messageable,
@@ -318,8 +364,18 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     ) -> Optional[discord.Message]:
         """Publie le menu principal en NOUVEAU message (épinglé), distinct du suivi de génération."""
         view = views.DossierView(case, portraits_meta)
+        content: Optional[str] = None
+        allowed = discord.AllowedMentions.none()
+        guild = getattr(channel, "guild", None)
+        if isinstance(guild, discord.Guild):
+            role = await self._ensure_enqueteur_role(guild)
+            if role is not None:
+                content = role.mention
+                allowed = discord.AllowedMentions(roles=[role])
         try:
-            message = await channel.send(view=view)
+            message = await channel.send(
+                content=content, view=view, allowed_mentions=allowed,
+            )
         except discord.HTTPException:
             logger.exception("Impossible d'envoyer le menu dossier pour %s", case.case_id)
             return None
@@ -571,6 +627,69 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         await interaction.response.send_message(
             view=views.EvidenceView(case, load_portraits_data()), ephemeral=True
         )
+
+    # ------------------------------------------------------------------
+    # /notif — s'abonner / se désabonner des pings de début d'enquête
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="notif",
+        description="Reçois (ou coupe) une alerte quand une nouvelle enquête démarre.",
+    )
+    @app_commands.guild_only()
+    async def notif(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        assert guild is not None
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.response.send_message(
+                view=views.ErrorView("Commande utilisable uniquement sur un serveur."),
+                ephemeral=True,
+            )
+            return
+
+        role = await self._ensure_enqueteur_role(guild)
+        if role is None:
+            await interaction.response.send_message(
+                view=views.ErrorView(
+                    "Le bureau n'a pas pu préparer le rôle Enquêteur "
+                    "(permission « Gérer les rôles » manquante, ou NOTIF_ROLE_ID invalide)."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        try:
+            if role in member.roles:
+                await member.remove_roles(role, reason="ALIBI · /notif off")
+                await interaction.response.send_message(
+                    f"Tu ne seras plus mentionné·e quand une enquête démarre "
+                    f"(rôle {role.mention} retiré).",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            else:
+                await member.add_roles(role, reason="ALIBI · /notif on")
+                await interaction.response.send_message(
+                    f"Tu seras mentionné·e au lancement des enquêtes "
+                    f"(rôle {role.mention} ajouté).",
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                view=views.ErrorView(
+                    "Impossible de modifier ton rôle : place le rôle du bot "
+                    "au-dessus du rôle Enquêteur, avec la permission « Gérer les rôles »."
+                ),
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            logger.exception("Échec /notif pour %s sur %s", member.id, guild.id)
+            await interaction.response.send_message(
+                view=views.ErrorView("Incident en modifiant ton rôle. Réessaie dans un instant."),
+                ephemeral=True,
+            )
 
     # ------------------------------------------------------------------
     # /badge — équivalent slash du bouton « Mon badge »

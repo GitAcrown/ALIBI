@@ -128,6 +128,116 @@ def _name_mentioned(name: str, haystack: str) -> bool:
     return bool(re.search(rf"\b{re.escape(surname)}\b", haystack))
 
 
+def _surname(name: str) -> str:
+    """Dernier token significatif d'un nom complet (ex. « Clara Montfort » → montfort)."""
+    folded = _fold_text(name).strip()
+    tokens = re.findall(r"[a-z0-9]{3,}", folded)
+    return tokens[-1] if tokens else ""
+
+
+def _same_surname(name_a: str, name_b: str) -> bool:
+    a, b = _surname(name_a), _surname(name_b)
+    return bool(a) and a == b
+
+
+def _shared_affiliation_fact(name_a: str, name_b: str, facts: list[dict]) -> dict | None:
+    """Cherche un fact 'relation' déjà existant qui cite les deux noms (ex. affiliation à
+    une même organisation/entreprise/équipe) — signal qu'un lien professionnel/collectif
+    est DÉJÀ posé par le dossier, à réutiliser plutôt qu'inventer un « aucun lien »."""
+    for f in facts:
+        if f.get("type") != "relation":
+            continue
+        content = _fold_text(str(f.get("content", "")))
+        if _name_mentioned(name_a, content) and _name_mentioned(name_b, content):
+            return f
+    return None
+
+
+def auto_patch_relations(raw: dict) -> dict:
+    """Répare mécaniquement (sans appel LLM) le maillage relationnel entre suspects.
+
+    Le validateur exige que chaque suspect ait un fact 'relation' nommant CHAQUE autre
+    suspect — avec 7-8 suspects ça représente jusqu'à 56 mentions nommées à réussir d'un
+    coup pour le LLM, une des causes les plus fréquentes de rejet/relance. C'est une règle
+    purement mécanique (présence/absence d'un nom dans un texte) : on la corrige donc ici
+    par du code plutôt que de renvoyer le dossier en correction au LLM.
+
+    Le lien injecté n'est JAMAIS un « aucun lien / de vue » choisi au hasard s'il existe un
+    indice contraire déjà posé par le dossier généré (aucune invention, uniquement des
+    signaux déjà présents dans `raw`) :
+    1. Même nom de famille → parenté probable à éclaircir.
+    2. Un fact 'relation' existant cite déjà les deux noms (même organisation/affaire) →
+       réutilise cette référence plutôt que de nier tout lien.
+    3. Sinon seulement : simple connaissance / aucun lien particulier.
+    """
+    suspects: dict = raw.get("suspects", {})
+    facts: list[dict] = raw.get("facts", [])
+    facts_by_id = {f["id"]: f for f in facts}
+    existing_ids = {f["id"] for f in facts}
+    # Snapshot des facts D'ORIGINE (avant tout patch) pour la détection d'affiliation
+    # partagée : les facts fourre-tout qu'on injecte ci-dessous listent volontairement
+    # PLUSIEURS noms à la fois et ne doivent jamais être pris pour un signal d'affiliation
+    # réelle pour un AUTRE suspect (sinon effet boule de neige/circulaire).
+    original_relation_facts = [f for f in facts if f.get("type") == "relation"]
+
+    for sid, s in suspects.items():
+        known_relation_text = " ".join(
+            _fold_text(str(facts_by_id[fid].get("content", "")))
+            for fid in s.get("known_fact_ids", [])
+            if fid in facts_by_id and facts_by_id[fid].get("type") == "relation"
+        )
+        name_a = str(s.get("name", ""))
+        missing_sids = [
+            other_sid for other_sid, other in suspects.items()
+            if other_sid != sid
+            and not _name_mentioned(str(other.get("name", "")), known_relation_text)
+        ]
+        if not missing_sids:
+            continue
+
+        lines = []
+        for other_sid in missing_sids:
+            name_b = str(suspects[other_sid].get("name", ""))
+            if _same_surname(name_a, name_b):
+                lines.append(
+                    f"{name_a} et {name_b} portent le même nom de famille — un lien de "
+                    "parenté est à éclaircir."
+                )
+                continue
+            shared = _shared_affiliation_fact(name_a, name_b, original_relation_facts)
+            if shared is not None:
+                lines.append(
+                    f"{name_a} et {name_b} sont tous deux liés à la même organisation/affaire "
+                    f"mentionnée dans le dossier (cf. fait {shared['id']}) — connaissance "
+                    "professionnelle probable."
+                )
+                continue
+            lines.append(
+                f"{name_a} et {name_b} n'ont pas de lien particulier connu : simple "
+                "connaissance du jour, ou ne se connaissent que de vue."
+            )
+
+        suffix = 1
+        new_id = f"AUTOFIX_REL_{sid}_{suffix}"
+        while new_id in existing_ids:
+            suffix += 1
+            new_id = f"AUTOFIX_REL_{sid}_{suffix}"
+        existing_ids.add(new_id)
+        new_fact = {
+            "id": new_id,
+            "type": "relation",
+            "content": " ".join(lines),
+            "keywords": ["relation", "lien", "connaissance"],
+        }
+        facts.append(new_fact)
+        facts_by_id[new_id] = new_fact
+        s.setdefault("known_fact_ids", []).append(new_id)
+
+    raw["facts"] = facts
+    raw["suspects"] = suspects
+    return raw
+
+
 # Fenêtre max autour de time_of_death pour juger le coupable « capable ».
 # Volontairement étroite : ±10 min suffit (présence au moment du crime), pas une heure.
 _CAPABLE_TIME_WINDOW_MIN = 10

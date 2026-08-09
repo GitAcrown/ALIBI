@@ -201,6 +201,9 @@ class CaseEngine:
                     all_issues_log.append(f"Tentative {attempt} — erreur technique : {e}")
                     continue
 
+                # Répare mécaniquement (sans LLM) le maillage relationnel entre suspects —
+                # cause fréquente de rejet, purement mécanique (cf. auto_patch_relations).
+                candidate = scenario_validator.auto_patch_relations(candidate)
                 last_candidate = candidate
 
                 # Code pur (ms) — ce n'est PAS un LLM. L'étape lente ensuite = ScenarioAuditor.

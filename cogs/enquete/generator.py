@@ -177,6 +177,19 @@ Corrige UNIQUEMENT ce qui est nécessaire pour résoudre CES erreurs précises. 
 preuves déjà corrects. NE réécris PAS une nouvelle histoire depuis zéro — c'est une correction \
 chirurgicale d'un dossier existant, pas une nouvelle création.
 
+Aide-toi de ces techniques de correction ciblée selon le type d'erreur :
+- Erreur « un seul suspect suffit à résoudre l'affaire » / « recoupement à un seul suspect » : \
+NE change PAS l'intrigue. Déplace ou duplique un des éléments clés (un fact du known_fact_ids \
+qui rend la déduction possible) vers un DEUXIÈME suspect qui ne l'avait pas — le chemin de \
+déduction final doit nécessiter de recouper au moins deux suspects différents, jamais un seul.
+- Erreur de chronologie/incohérence de lieu ou d'heure : corrige uniquement les champs `time`/ \
+`location` en conflit dans `timeline`, ou l'entrée fautive — ne réinvente pas les autres entrées.
+- Erreur « pas assez de suspects avec un secret/mobile » : ajoute un secret ou un mobile discret \
+à un ou deux suspects innocents existants (nouveau fact + known_fact_ids/secret_fact_ids), sans \
+toucher aux autres suspects déjà conformes.
+- Erreur de champ vide ou de formulation (ex. `investigation_moment` sans délai explicite, `role` \
+avec un adjectif suggestif) : reformule UNIQUEMENT ce champ précis, sans toucher au reste.
+
 Renvoie le dossier COMPLET corrigé (même format JSON, tous les champs).
 """
 
@@ -347,7 +360,8 @@ class ScenarioGenerator:
         nombre/choix de suspects ne change JAMAIS en cours de correction (on réutilise
         les slots du candidat précédent).
         """
-        if previous_candidate is not None and issues:
+        is_repair = previous_candidate is not None and bool(issues)
+        if is_repair:
             slots = sorted(previous_candidate.get("suspects", {}).keys()) or _pick_slots()
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
                 n=len(slots), slots=", ".join(slots),
@@ -387,13 +401,21 @@ class ScenarioGenerator:
                 {"role": "user", "content": "\n".join(user_parts)},
             ]
 
+        # Les passes de correction ciblée (previous_candidate + issues) reçoivent plus de
+        # budget de raisonnement : corriger des erreurs précises sans casser le reste est
+        # plus contraint que la création initiale.
+        reasoning_effort = (
+            config.GENERATION_REASONING_EFFORT_REPAIR
+            if is_repair
+            else config.GENERATION_REASONING_EFFORT
+        )
         raw = await self.client.chat_json(
             messages,
             schema_name="case_dossier",
             json_schema=build_case_schema(slots),
             model=config.MODEL_MAIN,
             max_tokens=config.GENERATION_MAX_TOKENS,
-            reasoning_effort=config.GENERATION_REASONING_EFFORT,
+            reasoning_effort=reasoning_effort,
         )
         logger.info(
             "Dossier généré (titre=%r, %d suspects, coupable=%s)",
