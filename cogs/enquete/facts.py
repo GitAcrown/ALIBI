@@ -44,6 +44,17 @@ def normalize_text(text: str) -> str:
 class FactEngine:
     def __init__(self, case: Case):
         self.case = case
+        # Vocabulaire des preuves (description) rattaché à chaque fact via
+        # `related_fact_ids` — permet à une question qui cite un détail d'une preuve
+        # publique (ex. « veste rouge ») de faire remonter le fact miroir correspondant
+        # même si sa propre formulation (content/keywords) diffère de celle de la preuve.
+        self._evidence_tokens_by_fact: dict[str, set[str]] = {}
+        for e in case.evidence.values():
+            tokens = set(_normalize(e.description))
+            if not tokens:
+                continue
+            for fid in e.related_fact_ids:
+                self._evidence_tokens_by_fact.setdefault(fid, set()).update(tokens)
 
     def known_facts(self, suspect: Suspect) -> list[Fact]:
         return [self.case.facts[fid] for fid in suspect.known_fact_ids if fid in self.case.facts]
@@ -76,7 +87,12 @@ class FactEngine:
             for kw in fact.keywords:
                 kw_tokens.update(_normalize(kw))
             content_tokens = set(_normalize(fact.content))
-            score = len(q_tokens & kw_tokens) * 2 + len(q_tokens & content_tokens)
+            evidence_tokens = self._evidence_tokens_by_fact.get(fact.id, set())
+            score = (
+                len(q_tokens & kw_tokens) * 2
+                + len(q_tokens & content_tokens)
+                + len(q_tokens & evidence_tokens)
+            )
             if score > 0:
                 scored.append((score, fact))
             else:

@@ -96,7 +96,17 @@ le suspect les cache mais peut les révéler s'il est acculé/interrogé habilem
 - Certains suspects ont des "lies" : des mensonges qu'ils racontent à la place de la vérité sur \
 un fact précis (fact_id + lie_text). Un mensonge doit être plausible et contredit par un autre \
 fait ou une preuve, pour permettre aux enquêteurs de le démasquer en recoupant les informations.
-- Génère 4 à 8 preuves (evidence), dont AU MOINS 2 publiques (is_public=true), reliées à des facts.
+- Génère 4 à 8 preuves (evidence), dont EXACTEMENT 2 à 3 publiques (is_public=true) — pas plus : \
+trop d'indices visibles dès le départ noient la partie, le reste doit rester privé et se révéler \
+progressivement en cours de partie.
+- CONFRONTABILITÉ OBLIGATOIRE : chaque preuve (surtout publique) décrit un détail concret \
+(vêtement, objet, position, horaire, comportement...). CE détail doit avoir un fait atomique \
+MIROIR dans `facts`, référencé dans `related_fact_ids` de la preuve, ET connu (`known_fact_ids`) \
+d'AU MOINS UN suspect capable d'être interrogé dessus (le suspect concerné, un témoin, ou \
+quelqu'un qui peut confirmer/infirmer/mentir à ce sujet). Une preuve dont AUCUN suspect ne peut \
+parler (faute de fait connu correspondant) est INUTILE — le joueur qui interroge quelqu'un sur ce \
+détail précis doit obtenir une confirmation, un démenti, ou un mensonge démasquable, jamais \
+seulement de l'évasif générique par manque d'information.
 - `summary` ne doit JAMAIS révéler le coupable ni des indices trop directs (c'est un résumé \
 d'accroche pour une liste d'enquêtes archivées).
 - `true_timeline_summary` et `main_lies_summary` sont réservés à la résolution finale : ils \
@@ -189,6 +199,13 @@ déduction final doit nécessiter de recouper au moins deux suspects différents
 toucher aux autres suspects déjà conformes.
 - Erreur de champ vide ou de formulation (ex. `investigation_moment` sans délai explicite, `role` \
 avec un adjectif suggestif) : reformule UNIQUEMENT ce champ précis, sans toucher au reste.
+- Erreur « preuve non confrontable » (aucun fait connu ne corrobore/contredit son détail concret) \
+: ajoute un fact atomique miroir du détail décrit par cette preuve, référence-le dans \
+`related_fact_ids` de la preuve concernée, et ajoute-le au `known_fact_ids` d'un suspect \
+pertinent (le suspect visé par le détail, un témoin, ou quelqu'un capable d'en parler) — ne \
+touche à rien d'autre.
+- Erreur « trop de preuves publiques » (plus de 3) : repasse l'excédent en `is_public=false` \
+(le contenu reste identique, seule la visibilité change) plutôt que d'en supprimer ou réécrire.
 
 Renvoie le dossier COMPLET corrigé (même format JSON, tous les champs).
 """
@@ -224,9 +241,11 @@ def _setting_constraints(slots: list[str], portraits_meta: dict) -> str:
         "médiévale/antique, ou tout cadre où un android serait anachronique.\n"
         "- Pour chaque suspect robot/android : le champ `age` représente des ANNÉES DE "
         "SERVICE / depuis l'activation (ex. 7, 14, 40), cohérentes avec l'époque choisie — "
-        "pas un âge humain incongru collé au hasard. Son `role` peut rappeler discrètement "
-        "sa nature (majordome automatisé, archiveur synthétique…) sans en faire le centre "
-        "de l'intrigue."
+        "pas un âge humain incongru collé au hasard. Son `role` DOIT mentionner "
+        "EXPLICITEMENT sa nature artificielle (ex. 'Majordome robot', 'Archiviste "
+        "androïde', 'IA de sécurité') — les joueurs doivent savoir dès la lecture de sa "
+        "fiche que ce suspect est un robot/android, sans ambiguïté ni sous-entendu discret. "
+        "Ça n'en fait pas pour autant le centre de l'intrigue ni le coupable par défaut."
     )
 
 

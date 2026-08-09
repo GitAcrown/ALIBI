@@ -554,7 +554,13 @@ class DossierView(discord.ui.LayoutView):
     y compris 3h plus tard et après redémarrage du bot (sans re-add_view).
     """
 
-    def __init__(self, case: Case, portraits_meta: dict):
+    def __init__(
+        self,
+        case: Case,
+        portraits_meta: dict,
+        *,
+        ping_role: Optional[discord.Role] = None,
+    ):
         super().__init__(timeout=None)
         file_e = E.e(E.FILE)
         file_prefix = f"{file_e} " if file_e else ""
@@ -562,7 +568,19 @@ class DossierView(discord.ui.LayoutView):
         clock_prefix = f"{clock} " if clock else ""
         pk = case.case_pk
 
-        children = [
+        # Les LayoutView (IS_COMPONENTS_V2) interdisent le champ message `content` :
+        # la mention du rôle notif doit vivre dans un TextDisplay (et ping via
+        # allowed_mentions à l'envoi).
+        children: list = []
+        if ping_role is not None:
+            children.append(
+                discord.ui.TextDisplay(
+                    f"{ping_role.mention} — Une nouvelle enquête démarre."
+                )
+            )
+            children.append(discord.ui.Separator())
+
+        children += [
             discord.ui.TextDisplay(_heading(E.CLASSIFIED, "DOSSIER CLASSIFIÉ")),
             discord.ui.TextDisplay(f"# {case.title}"),
             discord.ui.Separator(),

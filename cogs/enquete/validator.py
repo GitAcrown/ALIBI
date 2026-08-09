@@ -336,10 +336,27 @@ def validate(raw: dict) -> list[str]:
             if lie["fact_id"] not in fact_ids:
                 issues.append(f"Suspect {sid} : mensonge référence un fact inconnu '{lie['fact_id']}'")
 
+    # --- Confrontabilité : une preuve dont aucun fait n'est connu d'un suspect est
+    # inutile en interrogatoire (personne ne peut confirmer/infirmer/mentir dessus).
+    known_fact_ids_all: set[str] = set()
+    for s in suspects.values():
+        known_fact_ids_all.update(s.get("known_fact_ids", []))
     for e in evidence:
-        for fid in e.get("related_fact_ids", []):
+        related = e.get("related_fact_ids", [])
+        for fid in related:
             if fid not in fact_ids:
                 issues.append(f"Preuve {e['id']} référence un fact inconnu '{fid}'")
+        if not related:
+            issues.append(
+                f"Preuve {e['id']} n'est reliée à aucun fact (related_fact_ids vide) — "
+                "aucun suspect ne peut être confronté à son contenu"
+            )
+        elif not any(fid in known_fact_ids_all for fid in related):
+            issues.append(
+                f"Preuve {e['id']} : aucun de ses facts liés ({', '.join(related)}) n'est "
+                "connu d'un suspect — personne ne peut confirmer/infirmer/mentir sur ce "
+                "détail en interrogatoire, la preuve est inutile"
+            )
 
     for fid in raw.get("key_evidence_ids", []):
         if fid not in evidence_ids:
@@ -452,6 +469,11 @@ def validate(raw: dict) -> list[str]:
     public_evidence = [e for e in evidence if e.get("is_public")]
     if len(public_evidence) < 2:
         issues.append(f"Pas assez de preuves publiques ({len(public_evidence)} < 2)")
+    elif len(public_evidence) > 3:
+        issues.append(
+            f"Trop de preuves publiques dès le lancement ({len(public_evidence)} > 3) — "
+            "repasse l'excédent en is_public=false, le reste se révèle en cours de partie"
+        )
 
     # --- Aucune preuve ne désigne directement le coupable ---
     guilty_name = str(suspects.get(guilty_id, {}).get("name", "")).strip().lower()
