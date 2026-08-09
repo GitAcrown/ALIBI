@@ -1,0 +1,62 @@
+{
+    "p01": {
+        "emoji": "<:redacted_p01:1535787119124029492>",
+        "genre": "femme",
+        "style": "blanche, jeune"
+    },
+    "p02": {
+        "emoji": "<:redacted_p02:1535787120436846734>",
+        "genre": "femme",
+        "style": "asiatique, plus agée"
+    },
+    "p03": {
+        "emoji": "<:redacted_p03:1535787121619505252>",
+        "genre": "homme",
+        "style": "russe, quinquagénaire"
+    },
+    "p04": {
+        "emoji": "<:redacted_p04:1535787122458628117>",
+        "genre": "homme",
+        "style": "blanc, jeune"
+    },
+    "p05": {
+        "emoji": "<:redacted_p05:1535787123582574682>",
+        "genre": "homme",
+        "style": "asiatique, vieux"
+    },
+    "p06": {
+        "emoji": "<:redacted_p06:1535787125138788457>",
+        "genre": "agenre",
+        "style": "robot/android, artificiel — personnage non-humain ; âge = années de service/activation (pas un âge humain banal)"
+    },
+    "p07": {
+        "emoji": "<:redacted_p07:1535787127122567179>",
+        "genre": "homme",
+        "style": "blanc, vieux, avec un chapeau"
+    },
+    "p08": {
+        "emoji": "<:redacted_p08:1535787128821260310>",
+        "genre": "homme",
+        "style": "blanc, agé, cheveux blancs"
+    },
+    "p09": {
+        "emoji": "<:redacted_p09:1535787131690160199>",
+        "genre": "homme",
+        "style": "latino, style marin musclé"
+    },
+    "p10": {
+        "emoji": "<:redacted_p10:1535787133141393418>",
+        "genre": "femme",
+        "style": "blanche, blonde, vieille"
+    },
+    "p11": {
+        "emoji": "<:redacted_p11:1535787134081040466>",
+        "genre": "femme",
+        "style": "noire, chauve"
+    },
+    "p12": {
+        "emoji": "<:redacted_p12:1535787135234351274>",
+        "genre": "homme",
+        "style": "blanc, jeune, blond"
+    }
+}
