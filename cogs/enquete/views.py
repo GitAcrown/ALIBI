@@ -334,12 +334,24 @@ class _SuspectSelect(discord.ui.Select):
         )
 
 
+def _format_pv_body(history: list[Interrogation]) -> str:
+    """Corps Q/R d'un procès-verbal, tronqué si trop long pour un TextDisplay Discord."""
+    if not history:
+        return "-# Aucun procès-verbal à ton nom pour ce témoin."
+    body = "\n\n".join(
+        f"**Q ·** {h.question_raw}\n**R ·** *{h.response_text}*" for h in history
+    )
+    if len(body) > 3800:
+        return body[:3800].rstrip() + "\n\n-# … (tronqué)"
+    return body
+
+
 async def _send_history(
     interaction: discord.Interaction, cog: "EnqueteCog", case: Case, suspect_id: str
 ) -> None:
     """Renvoie TOUJOURS un nouveau message éphémère (jamais un edit_message) : ce
     sélecteur peut vivre dans un message PUBLIC (`/scelles`) — l'historique d'un
-    joueur ne doit jamais fuiter dans le message partagé."""
+    joueur ne doit jamais fuiter dans le message partagé (sauf via le bouton Partager)."""
     suspect = case.suspects.get(suspect_id)
     if suspect is None:
         return await interaction.response.send_message(MSG_SUSPECT_MISSING, ephemeral=True)
@@ -350,7 +362,9 @@ async def _send_history(
         else []
     )
     portraits = load_portraits_data()
-    view = HistoryView(suspect, history, portraits_meta=portraits)
+    view = HistoryView(
+        case.case_pk, suspect, history, portraits_meta=portraits,
+    )
     await interaction.response.send_message(
         view=view, files=view.portrait_files, ephemeral=True
     )
@@ -894,26 +908,27 @@ class _InterrogateAgainButton(discord.ui.Button):
 class HistoryView(discord.ui.LayoutView):
     """Transcript privé de TOUTES les questions déjà posées par CE joueur à un suspect.
 
-    Réponse aux inquiétudes : une fois le message d'interrogatoire fermé/expiré, ce panneau
-    (accessible via le sélecteur « historique » du panneau Preuves) permet de le revoir."""
+    Accessible via le sélecteur « historique » de `/scelles` / Scellés. Bouton Partager
+    pour verser volontairement le PV dans le canal (sinon lecture privée uniquement)."""
 
     def __init__(
         self,
+        case_pk: int,
         suspect: Suspect,
         history: list[Interrogation],
         *,
         portraits_meta: Optional[dict] = None,
+        shared: bool = False,
     ):
         super().__init__(timeout=180)
+        self.case_pk = case_pk
+        self.suspect = suspect
+        self.history = history
+        self.portraits_meta = portraits_meta or {}
         tag = _suspect_tag(suspect)
-        if not history:
-            body = "-# Aucun procès-verbal à ton nom pour ce témoin."
-        else:
-            body = "\n\n".join(
-                f"**Q ·** {h.question_raw}\n**R ·** *{h.response_text}*" for h in history
-            )
+        body = _format_pv_body(history)
 
-        attach, media = portrait_thumbnail_media(suspect.id, portraits_meta)
+        attach, media = portrait_thumbnail_media(suspect.id, self.portraits_meta)
         self._portrait_file = attach
         header_lines = [
             _heading(E.HISTORY, f"Archives — {suspect.name}"),
@@ -940,9 +955,143 @@ class HistoryView(discord.ui.LayoutView):
         children += [
             discord.ui.Separator(),
             discord.ui.TextDisplay(body),
+        ]
+        if shared:
+            note = f"-# **{len(history)}** dépôt(s) · déjà versé au canal"
+            button_row = None
+        elif history:
+            note = (
+                f"-# **{len(history)}** dépôt(s) · réservé à ton badge — "
+                "Partager pour le verser au canal"
+            )
+            button_row = discord.ui.ActionRow(_ShareHistoryButton(self))
+        else:
+            note = f"-# **{len(history)}** dépôt(s) · réservé à ton badge"
+            button_row = None
+        append_controls(children, note=note, button_row=button_row)
+        self.add_item(make_container(*children))
+
+    @property
+    def portrait_files(self) -> list[discord.File]:
+        return [self._portrait_file] if self._portrait_file is not None else []
+
+
+class _ShareHistoryButton(discord.ui.Button):
+    """Verse le procès-verbal privé dans le salon — volontaire, une fois par ouverture."""
+
+    def __init__(self, parent: "HistoryView"):
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Partager",
+            emoji=_btn_emoji(E.HISTORY) or _btn_emoji(E.FILE),
+        )
+        self.parent_view = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        cog, case = await _require_active_case(interaction)
+        if cog is None or case is None:
+            return
+        parent = self.parent_view
+        if case.case_pk != parent.case_pk:
+            return await interaction.response.send_message(
+                "Ce procès-verbal appartient à une affaire classée.", ephemeral=True
+            )
+        if not parent.history:
+            return await interaction.response.send_message(
+                "Rien à partager.", ephemeral=True
+            )
+        channel = interaction.channel
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return await interaction.response.send_message(
+                "Impossible de publier ici.", ephemeral=True
+            )
+
+        public = SharedHistoryView(
+            parent.suspect,
+            parent.history,
+            sharer_id=interaction.user.id,
+            sharer_name=interaction.user.display_name,
+            case_id=case.case_id,
+            portraits_meta=parent.portraits_meta,
+        )
+        try:
+            await channel.send(
+                view=public,
+                files=public.portrait_files,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            logger.exception("Échec partage PV dans %s", getattr(channel, "id", "?"))
+            return await interaction.response.send_message(
+                "Échec de la publication — permissions salon ?", ephemeral=True
+            )
+
+        # Remplace le panneau privé : bouton retiré, mention « déjà versé ».
+        # On renvoie le portrait en `attachments` pour que le Thumbnail
+        # attachment:// reste résolu après l'edit.
+        updated = HistoryView(
+            parent.case_pk,
+            parent.suspect,
+            parent.history,
+            portraits_meta=parent.portraits_meta,
+            shared=True,
+        )
+        await interaction.response.edit_message(
+            view=updated,
+            attachments=updated.portrait_files or [],
+        )
+
+
+class SharedHistoryView(discord.ui.LayoutView):
+    """Version publique d'un procès-verbal versée volontairement par un enquêteur."""
+
+    def __init__(
+        self,
+        suspect: Suspect,
+        history: list[Interrogation],
+        *,
+        sharer_id: int,
+        sharer_name: str,
+        case_id: str,
+        portraits_meta: Optional[dict] = None,
+    ):
+        super().__init__(timeout=None)
+        tag = _suspect_tag(suspect)
+        body = _format_pv_body(history)
+        attach, media = portrait_thumbnail_media(suspect.id, portraits_meta)
+        self._portrait_file = attach
+        header_lines = [
+            _heading(E.HISTORY, f"Procès-verbal — {suspect.name}"),
+            f"-# {tag}",
+        ]
+        if media is not None:
+            try:
+                header = discord.ui.Section(
+                    *[discord.ui.TextDisplay(line) for line in header_lines],
+                    accessory=discord.ui.Thumbnail(media, description=suspect.name),
+                )
+            except Exception:
+                logger.exception("Thumbnail portrait impossible pour %s", suspect.id)
+                header = None
+        else:
+            header = None
+
+        children: list = []
+        if header is not None:
+            children.append(header)
+        else:
+            for line in header_lines:
+                children.append(discord.ui.TextDisplay(line))
+        children += [
             discord.ui.Separator(),
             discord.ui.TextDisplay(
-                f"-# **{len(history)}** dépôt(s) · réservé à ton badge"
+                f"Versé par <@{sharer_id}> ({sharer_name}) — dossier `{case_id}`"
+            ),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(body),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(
+                f"-# **{len(history)}** dépôt(s) · partagé volontairement"
             ),
         ]
         self.add_item(make_container(*children))
