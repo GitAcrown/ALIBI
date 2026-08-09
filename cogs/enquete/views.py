@@ -731,6 +731,14 @@ class StatusView(discord.ui.LayoutView):
 
 
 class InterrogationResultView(discord.ui.LayoutView):
+    """Procès-verbal d'interrogatoire (éphémère).
+
+    `status` :
+    - ``pending`` — le suspect réfléchit (avant les premiers tokens) ;
+    - ``streaming`` — la déposition s'écrit progressivement ;
+    - ``done`` — réponse finale + bouton « Reconvoquer… ».
+    """
+
     def __init__(
         self,
         *,
@@ -744,11 +752,19 @@ class InterrogationResultView(discord.ui.LayoutView):
         portraits_meta: Optional[dict] = None,
         suspect_age: Optional[int] = None,
         suspect_role: str = "",
+        status: str = "done",
     ):
-        super().__init__(timeout=300)
+        # Pendant pending/streaming on garde un timeout long : un raisonnement medium
+        # + éventuel retry peut dépasser 2 minutes avant la vue finale.
+        super().__init__(timeout=None if status != "done" else 300)
+        self.status = status
         note = ""
         if is_duplicate:
             note = "-# Même piste déjà suivie — l'info ne change pas (crédit d'interrogatoire consommé)."
+        elif status == "pending":
+            note = "-# Le suspect réfléchit…"
+        elif status == "streaming":
+            note = "-# Le suspect répond…"
         tag_bits = []
         if suspect_age is not None:
             tag_bits.append(f"{suspect_age} ans")
@@ -756,8 +772,11 @@ class InterrogationResultView(discord.ui.LayoutView):
             tag_bits.append(suspect_role)
         subtitle = " · ".join(tag_bits)
 
-        # Portrait plein format en Thumbnail (Section) — plus l'emoji inline.
-        attach, media = portrait_thumbnail_media(suspect_id, portraits_meta)
+        # Portrait seulement sur la vue finale : les edits streaming éviteraient sinon
+        # de re-joindre le fichier à chaque tick (et risqueraient de perdre l'attachment).
+        attach, media = (None, None)
+        if status == "done":
+            attach, media = portrait_thumbnail_media(suspect_id, portraits_meta)
         self._portrait_file = attach
 
         header_lines = [
@@ -778,6 +797,15 @@ class InterrogationResultView(discord.ui.LayoutView):
         else:
             header = None
 
+        if status == "pending":
+            deposition = "_…_"
+        elif status == "streaming":
+            deposition = f"*{response}*" if response else "_…_"
+            if response and not response.endswith("…"):
+                deposition = f"*{response}…*"
+        else:
+            deposition = f"*{response}*"
+
         children: list = []
         if header is not None:
             children.append(header)
@@ -788,7 +816,7 @@ class InterrogationResultView(discord.ui.LayoutView):
         children += [
             discord.ui.TextDisplay(f"**Question**\n{question}"),
             discord.ui.Separator(),
-            discord.ui.TextDisplay(f"**Déposition**\n*{response}*"),
+            discord.ui.TextDisplay(f"**Déposition**\n{deposition}"),
         ]
         append_controls(
             children,
@@ -799,7 +827,7 @@ class InterrogationResultView(discord.ui.LayoutView):
                 discord.ui.ActionRow(
                     _InterrogateAgainButton(case.case_pk, questions_left),
                 )
-                if case is not None and questions_left > 0
+                if status == "done" and case is not None and questions_left > 0
                 else None
             ),
         )

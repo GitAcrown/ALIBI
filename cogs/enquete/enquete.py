@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import discord
@@ -112,31 +113,90 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 f"Tes crédits d'interrogatoire sont épuisés ({qmax})."
             )
 
+        # Pas de thinking Discord natif : on affiche tout de suite notre LayoutView
+        # « en train de répondre », puis on stream la déposition via edits throttlés.
         if not interaction.response.is_done():
             try:
                 if is_modal_flow:
                     await interaction.response.defer()
                 else:
-                    await interaction.response.defer(ephemeral=True, thinking=True)
+                    await interaction.response.defer(ephemeral=True)
             except discord.HTTPException:
                 is_modal_flow = False
                 if not interaction.response.is_done():
-                    await interaction.response.defer(ephemeral=True, thinking=True)
+                    await interaction.response.defer(ephemeral=True)
 
         history = await store.get_player_suspect_history(case.case_pk, player_id, target.id)
         duplicate = find_duplicate(question, history)
+
+        remaining = qmax - (asked + 1)
+        portraits = load_portraits_data()
+
+        def _result_view(
+            *,
+            response: str,
+            status: str = "done",
+            is_duplicate: bool = False,
+        ) -> views.InterrogationResultView:
+            return views.InterrogationResultView(
+                suspect_id=target.id,
+                suspect_name=target.name,
+                question=question,
+                response=response,
+                questions_left=remaining,
+                is_duplicate=is_duplicate,
+                case=case,
+                portraits_meta=portraits if status == "done" else None,
+                suspect_age=target.age,
+                suspect_role=target.role,
+                status=status,
+            )
+
+        async def _edit_pv(
+            view: views.InterrogationResultView, *, with_files: bool = False
+        ) -> bool:
+            """Met à jour le procès-verbal en place. Renvoie False si l'edit a échoué."""
+            kwargs: dict = {"view": view}
+            if with_files:
+                kwargs["attachments"] = view.portrait_files or []
+            try:
+                await interaction.edit_original_response(**kwargs)
+                return True
+            except discord.HTTPException:
+                return False
 
         if duplicate is not None:
             response_text = duplicate.response_text
             fact_ids = duplicate.fact_ids_used
             is_duplicate = True
         else:
+            # Indicateur immédiat — visible pendant le raisonnement (souvent avant
+            # le premier token de `reponse`).
+            await _edit_pv(_result_view(response="", status="pending"))
+
             fact_engine = FactEngine(case)
             ctx = build_context(case, target, fact_engine, question, history)
             result = None
+            last_edit_at = 0.0
+            interval = config.INTERROGATION_STREAM_EDIT_INTERVAL_S
+
+            async def _on_partial(partial: str) -> None:
+                nonlocal last_edit_at
+                now = time.monotonic()
+                if now - last_edit_at < interval:
+                    return
+                last_edit_at = now
+                await _edit_pv(_result_view(response=partial, status="streaming"))
+
             for attempt in range(config.MAX_ACTOR_ATTEMPTS):
+                if attempt > 0:
+                    # Remet l'indicateur « réfléchit » avant un éventuel retry.
+                    await _edit_pv(_result_view(response="", status="pending"))
+                    last_edit_at = 0.0
                 try:
-                    candidate = await self.engine.actor.interroger(ctx, question)
+                    candidate = await self.engine.actor.interroger(
+                        ctx, question, on_partial_response=_on_partial,
+                    )
                 except Exception as e:
                     logger.error("Échec appel LLMActor.interroger : %s", e)
                     continue
@@ -144,7 +204,9 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 if not issues:
                     result = candidate
                     break
-                logger.warning("Réponse de suspect rejetée (tentative %d) : %s", attempt + 1, issues)
+                logger.warning(
+                    "Réponse de suspect rejetée (tentative %d) : %s", attempt + 1, issues
+                )
             if result is None:
                 result = response_validator.fallback_response(seed=player_id + asked)
             response_text = result["reponse"]
@@ -156,49 +218,18 @@ class EnqueteCog(commands.Cog, name="Enquete"):
             fact_ids, response_text, is_duplicate,
         )
 
-        remaining = qmax - (asked + 1)
-        portraits = load_portraits_data()
-        view = views.InterrogationResultView(
-            suspect_id=target.id,
-            suspect_name=target.name,
-            question=question,
-            response=response_text,
-            questions_left=remaining,
-            is_duplicate=is_duplicate,
-            case=case,
-            portraits_meta=portraits,
-            suspect_age=target.age,
-            suspect_role=target.role,
+        view = _result_view(
+            response=response_text, status="done", is_duplicate=is_duplicate,
         )
-        files = view.portrait_files
-
-        if is_modal_flow:
-            try:
-                await interaction.edit_original_response(
-                    view=view, attachments=files or [],
-                )
-                return
-            except discord.HTTPException:
-                logger.warning("edit_original_response a échoué pour l'interrogatoire — nouveau message")
-                # Le flux du File a pu être consommé : reconstruire la vue + fichier.
-                view = views.InterrogationResultView(
-                    suspect_id=target.id,
-                    suspect_name=target.name,
-                    question=question,
-                    response=response_text,
-                    questions_left=remaining,
-                    is_duplicate=is_duplicate,
-                    case=case,
-                    portraits_meta=portraits,
-                    suspect_age=target.age,
-                    suspect_role=target.role,
-                )
-                files = view.portrait_files
-
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, files=files, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, files=files, ephemeral=True)
+        if await _edit_pv(view, with_files=True):
+            return
+        logger.warning("edit_original_response final a échoué — followup de secours")
+        view = _result_view(
+            response=response_text, status="done", is_duplicate=is_duplicate,
+        )
+        await interaction.followup.send(
+            view=view, files=view.portrait_files, ephemeral=True,
+        )
 
     async def handle_accusation(
         self,

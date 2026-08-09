@@ -36,6 +36,9 @@ ACTOR_MAX_TOKENS = 2000
 RESOLUTION_REASONING_EFFORT = "low"
 RESOLUTION_MAX_TOKENS = 2000
 MAX_ACTOR_ATTEMPTS = 2
+# Intervalle mini entre deux edits Discord pendant le streaming de la déposition
+# (cooldown message Discord ~5 edits / 5 s — on reste largement en dessous).
+INTERROGATION_STREAM_EDIT_INTERVAL_S = 1.25
 
 # Règles de jeu
 CASE_DURATION_HOURS = 4

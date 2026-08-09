@@ -7,9 +7,9 @@ lui donne et ne peut pas s'en écarter (la conformité est vérifiée après cou
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+from typing import Awaitable, Callable, Optional
 
 from common.llm.client import LLMClient
 from common.llm.schemas import RESOLUTION_SCHEMA, SUSPECT_RESPONSE_SCHEMA
@@ -117,7 +117,15 @@ class LLMActor:
     def __init__(self, client: LLMClient):
         self.client = client
 
-    async def interroger(self, ctx: SuspectContext, question: str) -> dict:
+    async def interroger(
+        self,
+        ctx: SuspectContext,
+        question: str,
+        *,
+        on_partial_response: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> dict:
+        """Incarne le suspect. Si `on_partial_response` est fourni, stream la déposition
+        (champ `reponse`) au fur et à mesure pour permettre un affichage Discord progressif."""
         lies_by_fact = {lie["fact_id"]: lie["lie_text"] for lie in ctx.lies}
         facts_block = _format_facts(ctx.relevant_facts, ctx.secret_fact_ids, lies_by_fact)
 
@@ -154,6 +162,7 @@ class LLMActor:
             model=config.MODEL_MAIN,
             max_tokens=config.ACTOR_MAX_TOKENS,
             reasoning_effort=config.ACTOR_REASONING_EFFORT,
+            on_partial_reponse=on_partial_response,
         )
 
     async def resoudre(self, case: Case) -> str:
