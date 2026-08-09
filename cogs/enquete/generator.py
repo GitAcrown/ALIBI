@@ -61,17 +61,26 @@ mensonge — ce n'est jamais un instantané pris sur le vif.
 secret ou mensonge ne veut PAS dire coupable. Le coupable peut très bien sembler être le suspect \
 le moins évident.
 - Plusieurs suspects doivent avoir un mobile apparent (mobile != null), pas seulement le coupable.
-- INTERDIT LE « TITRE-INDICE » STRUCTUREL : si le mobile dominant touche à un enjeu concret \
-(héritage, testament, promotion, parts d'une société, garde d'un enfant...), le coupable ne doit \
-JAMAIS être le SEUL suspect dont le `role`, la `personality` ou le `mobile` le rattache à cet \
-enjeu — sinon un joueur devine le coupable d'un coup d'œil sur la liste des suspects, sans même \
-jouer. Invente TOUJOURS au moins un AUTRE suspect avec un intérêt comparable et tout aussi \
-légitime dans ce même enjeu (ex. affaire d'héritage → au moins deux personnes avec un droit ou un \
-espoir sur l'héritage, pas un « héritier » unique face à des suspects sans aucun lien à l'argent ; \
-promotion convoitée → au moins deux candidats plausibles au poste). Le `role` ne doit jamais être \
-une étiquette qui EST le mobile (proscrit : « L'héritier », « Le seul bénéficiaire », « L'actionnaire \
-majoritaire ») — décris plutôt une fonction/un statut neutre, le lien à l'enjeu se découvre par le \
-`mobile` ou les facts, partagé avec au moins un autre suspect.
+- ANTI-DÉSIGNATION UNIVOQUE — RÈGLE CENTRALE (relis-la avant de finaliser le JSON) : aucun \
+détail pris ISOLÉMENT (objet, tenue, équipement, accès, mobile, enjeu financier...) ne doit \
+permettre de désigner quelqu'un à lui seul en le croisant avec le roster. Deux cas concrets \
+fréquents à éviter :
+  a) OBJET/TENUE/ÉQUIPEMENT LIÉ À UN MÉTIER (ex. « veste orange de chantier », « badge \
+d'accès laboratoire », « blouse de cuisine ») : si une preuve (surtout publique) décrit un tel \
+détail, AU MOINS DEUX suspects doivent y avoir un accès plausible (même poste ou poste voisin, \
+tenue commune à toute une équipe, équipement partagé, présence répétée sur zone ce jour-là...). \
+INTERDIT qu'un objet de preuve ne colle, une fois comparé au `role` de chaque suspect, qu'à UN \
+SEUL métier du casting — sinon le coupable se déduit d'un coup d'œil sur le roster sans même \
+interroger personne.
+  b) ENJEU DE MOBILE CONCRET (héritage, testament, promotion, parts d'une société, garde d'un \
+enfant...) : le coupable ne doit JAMAIS être le SEUL suspect dont le `role`, la `personality` ou \
+le `mobile` le rattache à cet enjeu. Invente TOUJOURS au moins un AUTRE suspect avec un intérêt \
+comparable et tout aussi légitime (ex. héritage → au moins deux personnes avec un droit ou un \
+espoir dessus ; promotion convoitée → au moins deux candidats plausibles). Le `role` ne doit \
+jamais être une étiquette qui EST le mobile (proscrit : « L'héritier », « Le seul bénéficiaire »).
+  AVANT DE FINALISER : relis chaque preuve PUBLIQUE et chaque enjeu de mobile, et demande-toi \
+« ce détail, comparé au `role`/`mobile` de CHAQUE suspect, ne colle-t-il qu'à UNE seule \
+personne ? ». Si oui, généralise la description OU donne ce même point commun à un second suspect.
 - AFFILIATIONS EXPLICITES OBLIGATOIRES : dès que tu inventes une organisation, entreprise, \
 équipe, club, famille ou tout autre groupe nommé (ex. « Medialink », « le salon Helix », « la \
 troupe du théâtre »), crée un fact explicite de type 'relation' qui précise noir sur blanc QUI en \
@@ -96,9 +105,10 @@ le suspect les cache mais peut les révéler s'il est acculé/interrogé habilem
 - Certains suspects ont des "lies" : des mensonges qu'ils racontent à la place de la vérité sur \
 un fact précis (fact_id + lie_text). Un mensonge doit être plausible et contredit par un autre \
 fait ou une preuve, pour permettre aux enquêteurs de le démasquer en recoupant les informations.
-- Génère 4 à 8 preuves (evidence), dont EXACTEMENT 2 à 3 publiques (is_public=true) — pas plus : \
-trop d'indices visibles dès le départ noient la partie, le reste doit rester privé et se révéler \
-progressivement en cours de partie.
+- Génère 5 à 8 preuves (evidence), dont EXACTEMENT 2 publiques (is_public=true) — pas plus : \
+trop d'indices visibles dès le départ rendent l'affaire trop facile ; le reste reste privé et \
+se révèle progressivement en cours de partie. Les 2 preuves publiques doivent être AMBIGUËS \
+(compatibles avec au moins 2 innocents crédibles), jamais un indice quasi-direct.
 - CONFRONTABILITÉ OBLIGATOIRE : chaque preuve (surtout publique) décrit un détail concret \
 (vêtement, objet, position, horaire, comportement...). CE détail doit avoir un fait atomique \
 MIROIR dans `facts`, référencé dans `related_fact_ids` de la preuve, ET connu (`known_fact_ids`) \
@@ -148,20 +158,16 @@ pour ce slot — la majorité des enquêtes avec un robot doivent avoir un COUPA
 caveau, entrepôt ou ruelle ». Varie l'heure (matin, midi, après-midi, soirée, nuit — selon le \
 brief), le type de lieu, le milieu social et le mobile. Chaque affaire doit se distinguer net des \
 polars nocturnes interchangeables.
-- DIFFICULTÉ JUSTE : ni spoiler, ni casse-tête insoluble. Interdit les indices « signature » qui \
-ne peuvent concerner qu'un seul suspect (ex. empreinte robotique si un seul android est présent). \
-Les preuves publiques doivent laisser au moins 2 innocents crédibles. Mais il DOIT exister un \
-chemin de déduction concluant via recoupements (preuves + facts accessibles en interrogatoire) \
-— pas une vérité cachée uniquement dans true_timeline_summary.
-- Reste cohérent et jouable : un joueur humain doit pouvoir résoudre l'enquête par déduction \
-logique à partir des facts et preuves.
-- CONÇU POUR LE COLLECTIF, PAS POUR UN SEUL JOUEUR : chaque enquêteur a un nombre limité \
-d'interrogatoires (environ un par suspect) — répartis known_fact_ids/secret_fact_ids de façon à \
-ce qu'AUCUN suspect unique ne détienne, à lui seul via une seule question, de quoi résoudre \
-l'affaire. Le chemin de déduction concluant doit obliger à recouper des informations détenues par \
-AU MOINS DEUX suspects DIFFÉRENTS (ex. l'alibi de A n'est contredit que par un fact que seul B \
-connaît). Ça donne un vrai intérêt à ce que les joueurs se partagent leurs découvertes au lieu de \
-jouer chacun de leur côté.
+- DIFFICULTÉ HAUTE, CONÇUE POUR LE COLLECTIF (pas un seul joueur) : chaque enquêteur a un \
+nombre limité d'interrogatoires (un de moins que le nombre de suspects) — impossible d'interroger \
+tout le monde à fond seul. Les 2 preuves publiques doivent laisser AU MOINS 3 innocents crédibles \
+après lecture seule (un joueur qui n'interroge personne ne peut PAS désigner le coupable). Le \
+chemin de déduction concluant exige AU MOINS 4 recoupements distincts (preuves + facts \
+d'interrogatoire), OBLIGATOIREMENT répartis sur les known_fact_ids d'AU MOINS 3 suspects \
+différents : AUCUN suspect unique ne doit détenir, à lui seul via une seule question, de quoi \
+résoudre l'affaire. Ça force les joueurs à se partager leurs découvertes au lieu de jouer chacun \
+de leur côté — pas une vérité cachée uniquement dans true_timeline_summary, mais pas non plus \
+une affaire résolue en 10 minutes par un seul joueur curieux.
 - CLARTÉ NARRATIVE OBLIGATOIRE : `crime_description` (+ `victim_description`) doit, à elle \
 seule, permettre à un joueur de comprendre SANS AMBIGUÏTÉ : qui est la victime et ce qu'elle \
 faisait à cet endroit (son rôle/fonction/lien avec le lieu), pourquoi les suspects présents s'y \
@@ -204,8 +210,16 @@ avec un adjectif suggestif) : reformule UNIQUEMENT ce champ précis, sans touche
 `related_fact_ids` de la preuve concernée, et ajoute-le au `known_fact_ids` d'un suspect \
 pertinent (le suspect visé par le détail, un témoin, ou quelqu'un capable d'en parler) — ne \
 touche à rien d'autre.
-- Erreur « trop de preuves publiques » (plus de 3) : repasse l'excédent en `is_public=false` \
-(le contenu reste identique, seule la visibilité change) plutôt que d'en supprimer ou réécrire.
+- Erreur « trop / pas assez de preuves publiques » (il en faut EXACTEMENT 2) : bascule \
+`is_public` sur les preuves concernées (le contenu reste identique) plutôt que d'en supprimer \
+ou réécrire.
+- Erreur « détail de preuve/mobile ne colle qu'à un seul suspect » (désignation univoque) : NE \
+change PAS le détail lui-même ni l'intrigue. Deux options, au choix : (1) généralise la \
+formulation de la preuve pour qu'elle ne pointe plus exclusivement vers ce métier/rôle (ex. \
+« une tenue de travail salie » au lieu de « une veste orange de chantier » si un seul suspect \
+porte ce type de tenue) ; (2) donne à un second suspect un accès plausible au même détail (même \
+poste, tenue partagée, équipement commun, présence sur la même zone) via un fact + \
+known_fact_ids, sans toucher au reste du casting.
 
 Renvoie le dossier COMPLET corrigé (même format JSON, tous les champs).
 """

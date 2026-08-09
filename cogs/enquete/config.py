@@ -41,7 +41,7 @@ MAX_ACTOR_ATTEMPTS = 2
 INTERROGATION_STREAM_EDIT_INTERVAL_S = 1.25
 
 # Règles de jeu
-CASE_DURATION_HOURS = 4
+CASE_DURATION_HOURS = 3
 # 12 suspects fixes rendaient le jeu difficile à suivre (trop de monde à interroger/mémoriser).
 # Chaque enquête tire désormais un sous-ensemble aléatoire de portraits parmi le pool disponible.
 MIN_SUSPECTS = 6
@@ -49,23 +49,28 @@ MAX_SUSPECTS = 8
 # Planchers ABSOLUS (fallback petit casting) — en pratique min_suspects_with_trait()
 # ci-dessous exige davantage dès que le casting grandit, pour une partie de plusieurs
 # heures avec assez de fausses pistes pour occuper les joueurs tout du long.
-MIN_SUSPECTS_WITH_SECRET = 3
-MIN_SUSPECTS_WITH_MOBILE = 3
+MIN_SUSPECTS_WITH_SECRET = 4
+MIN_SUSPECTS_WITH_MOBILE = 4
+# Preuves visibles dès le lancement (le reste se révèle en cours de partie).
+PUBLIC_EVIDENCE_AT_START = 2
 
 
 def min_suspects_with_trait(n_suspects: int) -> int:
-    """Nombre minimum de suspects devant avoir un secret / mobile apparent, proportionnel
-    au casting (au moins la moitié) plutôt qu'un plancher fixe — un casting à 8 doit rester
-    difficile aussi longtemps qu'un casting à 6."""
-    return max(3, (n_suspects + 1) // 2)
+    """Nombre minimum de suspects devant avoir un secret / mobile apparent.
+
+    Relevé pour durcir la partie : ~2/3 du casting (plancher 4) — plus de fausses
+    pistes, moins de lecture « le seul qui a un secret = le coupable »."""
+    return max(4, (n_suspects * 2) // 3)
 
 
 def max_questions_for_case(case) -> int:
-    """Quota d'interrogations par joueur = nombre de suspects de l'affaire (6→6, 8→8…)."""
+    """Quota d'interrogations par joueur : un de moins que le nombre de suspects
+    (6→5, 8→7) — force le partage d'infos entre enquêteurs, empêche de tout
+    interroger seul."""
     n = len(getattr(case, "suspects", None) or {})
     if n <= 0:
-        return MIN_SUSPECTS
-    return n
+        return MIN_SUSPECTS - 1
+    return max(4, n - 1)
 
 # Override global de durée (tests) : CASE_DURATION_MINUTES=5 dans .env
 # Si absent / invalide → CASE_DURATION_HOURS * 60.
@@ -90,6 +95,17 @@ DUPLICATE_QUESTION_THRESHOLD = 0.82
 
 # Sélection de facts pertinents par mots-clés
 RELEVANT_FACTS_TOP_K = 6
+
+# Mobile deviné à l'accusation (bonus de points, indice de recoupement du mobile réel).
+# Seuils de recoupement (indice de Jaccard sur mots-clés normalisés, cf. scoring.py) :
+# en dessous de CLOSE, aucun rapport ; entre CLOSE et EXACT, piste proche ; au-dessus, mobile
+# identifié. Volontairement permissif (le joueur écrit une phrase courte, pas le texte exact).
+MOTIVE_GUESS_CLOSE_THRESHOLD = 0.12
+MOTIVE_GUESS_EXACT_THRESHOLD = 0.35
+MOTIVE_BONUS_CLOSE = 1
+MOTIVE_BONUS_EXACT = 2
+# Points pour avoir désigné le bon coupable (le bonus mobile s'ajoute par-dessus).
+CORRECT_ACCUSATION_POINTS = 3
 
 # Timer de résolution automatique
 RESOLUTION_CHECK_INTERVAL_MINUTES = 1

@@ -140,6 +140,7 @@ class Accusation:
     first_created_at: datetime
     last_created_at: datetime
     change_count: int
+    motive_guess: Optional[str] = None
 
 
 @dataclass
@@ -149,3 +150,9 @@ class PlayerResult:
     accused_suspect_id: Optional[SuspectId]
     correct: bool
     badges: list[str]
+    motive_guess: Optional[str] = None
+    # Bonus de points pour un mobile deviné juste/proche (0, config.MOTIVE_BONUS_CLOSE ou
+    # config.MOTIVE_BONUS_EXACT) — voir scoring.py.
+    motive_points: int = 0
+    # Total : points accusation correcte + bonus mobile (voir scoring.compute_results).
+    points: int = 0

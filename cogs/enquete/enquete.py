@@ -236,15 +236,19 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         interaction: discord.Interaction,
         *,
         suspect_id: str,
+        motive_guess: Optional[str] = None,
     ) -> None:
         guild = interaction.guild
         if guild is None:
             return
 
         # Depuis le sélecteur (bouton "Accuser…") : édite EN PLACE le même message
-        # ephémère au lieu d'en envoyer un nouveau à chaque changement d'accusation.
+        # ephémère au lieu d'en envoyer un nouveau à chaque changement d'accusation. Le
+        # mobile deviné passe par un modal (AccusationModal) : l'interaction reçue ici est
+        # alors de type modal_submit, mais comme le modal a été ouvert depuis un composant,
+        # Discord autorise quand même l'edit du message d'origine via cette interaction.
         is_component_flow = (
-            interaction.type == discord.InteractionType.component
+            interaction.type in (discord.InteractionType.component, discord.InteractionType.modal_submit)
             and not interaction.response.is_done()
         )
 
@@ -265,11 +269,14 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         if target is None:
             return await _error("Ce nom ne figure pas au dossier.")
 
-        await store.upsert_accusation(case.case_pk, interaction.user.id, target.id)
+        accusation = await store.upsert_accusation(
+            case.case_pk, interaction.user.id, target.id, motive_guess=motive_guess
+        )
         portraits = load_portraits_data()
         emoji = (portraits.get(target.id) or {}).get("emoji") or ""
         view = views.AccusationResultView(
-            target.name, emoji, suspect_age=target.age, suspect_role=target.role
+            target.name, emoji, suspect_age=target.age, suspect_role=target.role,
+            motive_guess=accusation.motive_guess,
         )
 
         if is_component_flow:
@@ -316,7 +323,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 logger.exception("Erreur dans la boucle de résolution auto pour le serveur %s", guild_id)
 
     async def _announce_due_evidence(self, guild: discord.Guild, case: Case) -> None:
-        """Publie un bulletin public si une preuve programmée vient d'être révélée."""
+        """Révèle les preuves dues : met à jour le dossier épinglé + publie un bulletin."""
         if not case.channel_id:
             return
         try:
@@ -332,8 +339,32 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 channel = await guild.fetch_channel(case.channel_id)
             except Exception:
                 return
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return
+
+        # Recharge le case (is_public a basculé en base) pour reconstruire le dossier.
+        store = self.engine.storage_if_exists(guild)
+        fresh = await store.get_case(case.case_pk) if store is not None else None
+        if fresh is not None and fresh.announce_message_id:
+            try:
+                pinned = await channel.fetch_message(fresh.announce_message_id)
+                await pinned.edit(
+                    view=views.DossierView(fresh, load_portraits_data()),
+                )
+            except discord.NotFound:
+                logger.warning(
+                    "Message dossier %s introuvable — bulletin seul.",
+                    fresh.announce_message_id,
+                )
+            except discord.HTTPException:
+                logger.exception(
+                    "Échec de la mise à jour auto du dossier (%s)", case.case_id
+                )
+
         try:
-            await channel.send(view=views.EvidenceBulletinView(case, due))
+            await channel.send(
+                view=views.EvidenceBulletinView(fresh or case, due),
+            )
         except Exception:
             logger.exception("Échec de l'envoi du bulletin d'enquête (%s)", case.case_id)
 
@@ -433,8 +464,11 @@ class EnqueteCog(commands.Cog, name="Enquete"):
             logger.exception("Impossible d'enregistrer announce_message_id pour %s", case.case_id)
         return message
 
-    async def _unpin_dossier_menu(self, guild: discord.Guild, case: Case) -> None:
-        """Désépingle le menu principal de l'affaire (après /classer ou résolution auto)."""
+    async def _close_dossier_menu(self, guild: discord.Guild, case: Case) -> None:
+        """Après résolution : retire les boutons du menu principal et le désépingle.
+
+        Le message reste visible en archive (lecture seule) — plus d'Interroger/Accuser
+        une fois l'affaire classée."""
         if not case.channel_id or not case.announce_message_id:
             return
         channel = guild.get_channel(case.channel_id)
@@ -447,10 +481,20 @@ class EnqueteCog(commands.Cog, name="Enquete"):
             return
         try:
             pinned = await channel.fetch_message(case.announce_message_id)
+        except discord.NotFound:
+            return
+        except discord.HTTPException as e:
+            logger.warning("Lecture du menu dossier échouée : %s", e)
+            return
+        try:
+            await pinned.edit(
+                view=views.DossierView(case, load_portraits_data(), closed=True)
+            )
+        except discord.HTTPException as e:
+            logger.warning("Édition du menu dossier (retrait boutons) échouée : %s", e)
+        try:
             if pinned.pinned:
                 await pinned.unpin(reason=f"ALIBI · affaire {case.case_id} classée")
-        except discord.NotFound:
-            pass
         except discord.HTTPException as e:
             logger.warning("Désépinglage du menu dossier échoué : %s", e)
 
@@ -462,11 +506,16 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         )
         channel = guild.get_channel(case.channel_id) if case.channel_id else None
         if isinstance(channel, (discord.TextChannel, discord.Thread)):
+            # Mentions des accusateurs dans le TextDisplay de ResolutionView.
+            mention_users = [discord.Object(id=r.player_id) for r in results]
             try:
-                await channel.send(view=view)
+                await channel.send(
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions(users=mention_users),
+                )
             except discord.HTTPException:
                 logger.warning("Impossible d'annoncer la résolution dans le salon %s", case.channel_id)
-        await self._unpin_dossier_menu(guild, case)
+        await self._close_dossier_menu(guild, resolved_case)
 
     # ------------------------------------------------------------------
     # Autocomplete
@@ -496,7 +545,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     @app_commands.command(name="enquete", description="Ouvre un nouveau dossier (admin).")
     @app_commands.describe(
         contexte="Contexte optionnel pour orienter l'enquête générée.",
-        duree_minutes="Durée de l'enquête en minutes (tests / fast-forward). Défaut : 4h.",
+        duree_minutes="Durée de l'enquête en minutes (tests / fast-forward). Défaut : 3h.",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -638,7 +687,13 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 view=views.ErrorView(f"`{suspect}` ne figure pas au dossier."), ephemeral=True
             )
             return
-        await self.handle_accusation(interaction, suspect_id=target.id)
+        existing = await store.get_accusation(case.case_pk, interaction.user.id)
+        await interaction.response.send_modal(
+            views.AccusationModal(
+                case.case_pk, target.id, target.name,
+                existing_motive_guess=existing.motive_guess if existing else None,
+            )
+        )
 
     # ------------------------------------------------------------------
     # /scelles — équivalent slash du bouton « Scellés »
@@ -761,11 +816,15 @@ class EnqueteCog(commands.Cog, name="Enquete"):
             return
         await interaction.response.defer(thinking=True)
         resolved_case, results = await self.engine.resolve_case(guild, case)
-        await self._unpin_dossier_menu(guild, case)
+        await self._close_dossier_menu(guild, resolved_case)
         view = views.ResolutionView(
             resolved_case, results, self._member_name_getter(guild), load_portraits_data()
         )
-        await interaction.followup.send(view=view)
+        mention_users = [discord.Object(id=r.player_id) for r in results]
+        await interaction.followup.send(
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=mention_users),
+        )
 
     # ------------------------------------------------------------------
     # /palmares
@@ -792,7 +851,11 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         view = views.ResolutionView(
             case, results, self._member_name_getter(guild), load_portraits_data()
         )
-        await interaction.response.send_message(view=view)
+        mention_users = [discord.Object(id=r.player_id) for r in results]
+        await interaction.response.send_message(
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=mention_users),
+        )
 
     # ------------------------------------------------------------------
     # /historique

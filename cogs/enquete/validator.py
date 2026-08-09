@@ -54,6 +54,54 @@ def _stake_tokens(suspect: dict) -> set[str]:
     return _normalize_tokens(text) & _STRUCTURAL_STAKE_MARKERS
 
 
+# Mots trop génériques / trop courants pour être une "empreinte" fiable même s'ils ne matchent
+# qu'un seul profil (objets et lieux de scène de crime passe-partout, pas des marqueurs de métier).
+_FINGERPRINT_STOPWORDS = {
+    "victime", "suspect", "preuve", "indice", "crime", "scene", "objet", "personne",
+    "temoin", "enquete", "affaire", "moment", "endroit", "quelque", "chose", "trouve",
+    "trouvee", "porte", "portait", "aurait", "avait", "etait",
+}
+
+
+def _profile_tokens(suspect: dict) -> set[str]:
+    text = " ".join(
+        str(suspect.get(field) or "")
+        for field in ("role", "personality", "alibi_summary", "mobile")
+    )
+    return _normalize_tokens(text) - _FINGERPRINT_STOPWORDS
+
+
+def _evidence_signature_issues(evidence: list[dict], suspects: dict) -> list[str]:
+    """Détecte une preuve publique dont un détail (objet/tenue/équipement lié à un métier)
+    ne correspond, une fois comparé au profil de chaque suspect, qu'à UNE seule personne du
+    casting — ex. "veste orange de chantier" quand un seul suspect travaille sur un chantier.
+    Un tel détail permet de désigner le coupable/quelqu'un d'un coup d'œil sans interroger
+    personne, même si aucune autre règle (nom cité, ADN...) n'est violée."""
+    issues: list[str] = []
+    if len(suspects) < 2:
+        return issues
+    profiles = {sid: _profile_tokens(s) for sid, s in suspects.items()}
+    for e in evidence:
+        if not e.get("is_public"):
+            continue
+        desc_tokens = _normalize_tokens(str(e.get("description", ""))) - _FINGERPRINT_STOPWORDS
+        for token in desc_tokens:
+            if len(token) < 5:
+                continue
+            matches = [sid for sid, toks in profiles.items() if token in toks]
+            if len(matches) == 1:
+                sid = matches[0]
+                name = suspects[sid].get("name", sid)
+                issues.append(
+                    f"Preuve publique {e.get('id')} : le mot '{token}' de sa description ne "
+                    f"correspond au profil (role/personality/alibi_summary/mobile) que du "
+                    f"suspect {sid} ({name}) — ce détail le désigne quasiment à lui seul. "
+                    "Généralise la description de la preuve, ou donne à un second suspect un "
+                    "rapport plausible au même détail (même poste, tenue/équipement partagé...)."
+                )
+    return issues
+
+
 # `role` doit être factuel (métier/statut) — ces adjectifs de caractère/attitude vendent la
 # mèche en orientant vers qui est suspect/innocent avant même de jouer.
 _ROLE_SUSPICIOUS_ADJECTIVES = {
@@ -433,6 +481,9 @@ def validate(raw: dict) -> list[str]:
                     "un autre suspect avec un intérêt comparable sur ce même enjeu."
                 )
 
+    # --- Preuve publique = "empreinte" d'un seul profil (objet/tenue/métier exclusif) ---
+    issues.extend(_evidence_signature_issues(evidence, suspects))
+
     # --- Volume de contenu jouable (proportionnel au nombre de suspects, cf. generator) ---
     min_facts = max(12, len(suspects) * 3)
     if len(facts) < min_facts:
@@ -467,12 +518,12 @@ def validate(raw: dict) -> list[str]:
             "chaque suspect doit avoir de quoi décrire ses liens avec les autres"
         )
     public_evidence = [e for e in evidence if e.get("is_public")]
-    if len(public_evidence) < 2:
-        issues.append(f"Pas assez de preuves publiques ({len(public_evidence)} < 2)")
-    elif len(public_evidence) > 3:
+    expected_public = config.PUBLIC_EVIDENCE_AT_START
+    if len(public_evidence) != expected_public:
         issues.append(
-            f"Trop de preuves publiques dès le lancement ({len(public_evidence)} > 3) — "
-            "repasse l'excédent en is_public=false, le reste se révèle en cours de partie"
+            f"Il faut EXACTEMENT {expected_public} preuves publiques au lancement "
+            f"(trouvé : {len(public_evidence)}) — bascule is_public sur les preuves "
+            "concernées, le reste se révèle en cours de partie"
         )
 
     # --- Aucune preuve ne désigne directement le coupable ---

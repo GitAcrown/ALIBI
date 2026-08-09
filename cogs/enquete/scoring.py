@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from . import config
+from .facts import normalize_tokens
 from .models import Accusation, Case, PlayerResult
 
 BadgeFn = Callable[[Case, list[Accusation]], Optional[int]]
@@ -69,6 +71,36 @@ BADGES: list[tuple[str, BadgeFn]] = [
 ]
 
 
+def _motive_target_text(case: Case, accused_suspect_id: str) -> Optional[str]:
+    """Texte de référence pour juger le mobile deviné par un joueur.
+
+    Le VRAI coupable a son mobile détaillé dans `case.motive` (texte riche, réservé à la
+    résolution). Un suspect innocent n'a qu'un `mobile` apparent, souvent plus court (ou
+    aucun) — comparer contre ce champ plutôt que contre le mobile du vrai coupable, qui
+    n'a rien à voir avec une personne qu'on accuse à tort."""
+    if accused_suspect_id == case.guilty_suspect_id:
+        return case.motive
+    suspect = case.suspects.get(accused_suspect_id)
+    return suspect.mobile if suspect else None
+
+
+def score_motive_guess(guess: Optional[str], target: Optional[str]) -> int:
+    """Recoupement mots-clés (Jaccard, sans LLM) entre le mobile deviné et le mobile réel
+    de la personne accusée. Renvoie un bonus de points (0, CLOSE ou EXACT)."""
+    if not guess or not target:
+        return 0
+    g_tokens = normalize_tokens(guess)
+    t_tokens = normalize_tokens(target)
+    if not g_tokens or not t_tokens:
+        return 0
+    overlap = len(g_tokens & t_tokens) / len(g_tokens | t_tokens)
+    if overlap >= config.MOTIVE_GUESS_EXACT_THRESHOLD:
+        return config.MOTIVE_BONUS_EXACT
+    if overlap >= config.MOTIVE_GUESS_CLOSE_THRESHOLD:
+        return config.MOTIVE_BONUS_CLOSE
+    return 0
+
+
 def compute_results(case: Case, accusations: list[Accusation]) -> list[PlayerResult]:
     badge_winners: dict[str, Optional[int]] = {name: fn(case, accusations) for name, fn in BADGES}
 
@@ -76,6 +108,9 @@ def compute_results(case: Case, accusations: list[Accusation]) -> list[PlayerRes
     for acc in accusations:
         correct = acc.suspect_id == case.guilty_suspect_id
         badges = [name for name, winner in badge_winners.items() if winner == acc.player_id]
+        target = _motive_target_text(case, acc.suspect_id)
+        motive_points = score_motive_guess(acc.motive_guess, target)
+        accusation_points = config.CORRECT_ACCUSATION_POINTS if correct else 0
         results.append(
             PlayerResult(
                 case_pk=case.case_pk,
@@ -83,6 +118,11 @@ def compute_results(case: Case, accusations: list[Accusation]) -> list[PlayerRes
                 accused_suspect_id=acc.suspect_id,
                 correct=correct,
                 badges=badges,
+                motive_guess=acc.motive_guess,
+                motive_points=motive_points,
+                points=accusation_points + motive_points,
             )
         )
+    # Classement décroissant : plus de points d'abord, puis bonne accusation avant mauvaise.
+    results.sort(key=lambda r: (r.points, int(r.correct)), reverse=True)
     return results

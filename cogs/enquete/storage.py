@@ -131,6 +131,7 @@ ACCUSATIONS_TABLE = TableBuilder(
         first_created_at TEXT NOT NULL,
         last_created_at TEXT NOT NULL,
         change_count INTEGER NOT NULL,
+        motive_guess TEXT,
         PRIMARY KEY (case_pk, player_id)
     )"""
 )
@@ -143,6 +144,9 @@ RESULTS_TABLE = TableBuilder(
         correct INTEGER NOT NULL,
         badges_json TEXT NOT NULL,
         computed_at TEXT NOT NULL,
+        motive_guess TEXT,
+        motive_points INTEGER NOT NULL DEFAULT 0,
+        points INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (case_pk, player_id)
     )"""
 )
@@ -226,6 +230,24 @@ class EnqueteStorage:
         names = {c["name"] for c in cols}
         if names and "reveal_at" not in names:
             await self._db.execute("ALTER TABLE evidence ADD COLUMN reveal_at TEXT")
+
+        cols = await self._db.fetchall("PRAGMA table_info(accusations)")
+        names = {c["name"] for c in cols}
+        if names and "motive_guess" not in names:
+            await self._db.execute("ALTER TABLE accusations ADD COLUMN motive_guess TEXT")
+
+        cols = await self._db.fetchall("PRAGMA table_info(results)")
+        names = {c["name"] for c in cols}
+        if names and "motive_guess" not in names:
+            await self._db.execute("ALTER TABLE results ADD COLUMN motive_guess TEXT")
+        if names and "motive_points" not in names:
+            await self._db.execute(
+                "ALTER TABLE results ADD COLUMN motive_points INTEGER NOT NULL DEFAULT 0"
+            )
+        if names and "points" not in names:
+            await self._db.execute(
+                "ALTER TABLE results ADD COLUMN points INTEGER NOT NULL DEFAULT 0"
+            )
 
     # ------------------------------------------------------------------
     # Cycle de vie du dossier
@@ -543,28 +565,38 @@ class EnqueteStorage:
     # Accusations
     # ------------------------------------------------------------------
 
-    async def upsert_accusation(self, case_pk: int, player_id: int, suspect_id: str) -> Accusation:
+    async def upsert_accusation(
+        self, case_pk: int, player_id: int, suspect_id: str, *, motive_guess: Optional[str] = None
+    ) -> Accusation:
+        await self._ensure_migrated()
         existing = await self._db.fetchone(
             "SELECT * FROM accusations WHERE case_pk=? AND player_id=?", case_pk, player_id
         )
         now = _now_iso()
+        # Un mobile deviné vide (le joueur peut accuser sans le remplir) ne doit pas effacer
+        # une devinette précédente : on ne garde le nouveau que s'il est non vide.
+        if existing is not None and not motive_guess:
+            motive_guess = existing["motive_guess"]
         if existing is None:
             await self._db.execute(
-                """INSERT INTO accusations (case_pk, player_id, suspect_id, first_created_at, last_created_at, change_count)
-                VALUES (?,?,?,?,?,0)""",
-                case_pk, player_id, suspect_id, now, now,
+                """INSERT INTO accusations (case_pk, player_id, suspect_id, first_created_at, last_created_at, change_count, motive_guess)
+                VALUES (?,?,?,?,?,0,?)""",
+                case_pk, player_id, suspect_id, now, now, motive_guess,
             )
-            return Accusation(case_pk, player_id, suspect_id, _parse_dt(now), _parse_dt(now), 0)
+            return Accusation(case_pk, player_id, suspect_id, _parse_dt(now), _parse_dt(now), 0, motive_guess)
         change_count = existing["change_count"] + (1 if existing["suspect_id"] != suspect_id else 0)
         await self._db.execute(
-            "UPDATE accusations SET suspect_id=?, last_created_at=?, change_count=? WHERE case_pk=? AND player_id=?",
-            suspect_id, now, change_count, case_pk, player_id,
+            "UPDATE accusations SET suspect_id=?, last_created_at=?, change_count=?, motive_guess=? "
+            "WHERE case_pk=? AND player_id=?",
+            suspect_id, now, change_count, motive_guess, case_pk, player_id,
         )
         return Accusation(
-            case_pk, player_id, suspect_id, _parse_dt(existing["first_created_at"]), _parse_dt(now), change_count
+            case_pk, player_id, suspect_id, _parse_dt(existing["first_created_at"]), _parse_dt(now),
+            change_count, motive_guess,
         )
 
     async def get_accusation(self, case_pk: int, player_id: int) -> Optional[Accusation]:
+        await self._ensure_migrated()
         row = await self._db.fetchone(
             "SELECT * FROM accusations WHERE case_pk=? AND player_id=?", case_pk, player_id
         )
@@ -574,14 +606,17 @@ class EnqueteStorage:
             case_pk=row["case_pk"], player_id=row["player_id"], suspect_id=row["suspect_id"],
             first_created_at=_parse_dt(row["first_created_at"]),
             last_created_at=_parse_dt(row["last_created_at"]), change_count=row["change_count"],
+            motive_guess=row["motive_guess"],
         )
 
     async def get_all_accusations(self, case_pk: int) -> list[Accusation]:
+        await self._ensure_migrated()
         rows = await self._db.fetchall("SELECT * FROM accusations WHERE case_pk=?", case_pk)
         return [
             Accusation(
                 case_pk=r["case_pk"], player_id=r["player_id"], suspect_id=r["suspect_id"],
                 first_created_at=_parse_dt(r["first_created_at"]),
+                motive_guess=r["motive_guess"],
                 last_created_at=_parse_dt(r["last_created_at"]), change_count=r["change_count"],
             )
             for r in rows
@@ -598,24 +633,33 @@ class EnqueteStorage:
         )
 
     async def save_results(self, results: list[PlayerResult]) -> None:
+        await self._ensure_migrated()
         now = _now_iso()
         for r in results:
             await self._db.execute(
-                """INSERT OR REPLACE INTO results (case_pk, player_id, accused_suspect_id, correct, badges_json, computed_at)
-                VALUES (?,?,?,?,?,?)""",
+                """INSERT OR REPLACE INTO results (
+                    case_pk, player_id, accused_suspect_id, correct, badges_json, computed_at,
+                    motive_guess, motive_points, points
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
                 r.case_pk, r.player_id, r.accused_suspect_id, int(r.correct),
-                json.dumps(r.badges, ensure_ascii=False), now,
+                json.dumps(r.badges, ensure_ascii=False), now, r.motive_guess, r.motive_points,
+                r.points,
             )
 
     async def get_results(self, case_pk: int) -> list[PlayerResult]:
+        await self._ensure_migrated()
         rows = await self._db.fetchall("SELECT * FROM results WHERE case_pk=?", case_pk)
-        return [
+        results = [
             PlayerResult(
                 case_pk=r["case_pk"], player_id=r["player_id"], accused_suspect_id=r["accused_suspect_id"],
                 correct=bool(r["correct"]), badges=json.loads(r["badges_json"]),
+                motive_guess=r["motive_guess"], motive_points=r["motive_points"] or 0,
+                points=r["points"] or 0,
             )
             for r in rows
         ]
+        results.sort(key=lambda r: (r.points, int(r.correct)), reverse=True)
+        return results
 
     async def get_last_resolved_case(self, guild_id: int) -> Optional[Case]:
         row = await self._db.fetchone(

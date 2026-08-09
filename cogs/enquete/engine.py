@@ -39,20 +39,18 @@ class CaseAlreadyActive(Exception):
 def _schedule_evidence_reveals(
     evidence: dict[str, Evidence], now: datetime, deadline: datetime
 ) -> dict[str, datetime]:
-    """Programme la révélation progressive de quelques preuves gardées privées à la
-    génération — pour que des « bulletins » ponctuent la partie sur plusieurs heures au
-    lieu que tout le contenu jouable soit disponible (ou invisible) dès la première minute.
+    """Programme la révélation progressive des preuves gardées privées à la génération.
 
     La preuve elle-même ne change jamais (la vérité est fixe) : seule sa visibilité
-    (`is_public`) bascule automatiquement à l'heure programmée. On laisse toujours au moins
-    la moitié des preuves privées intactes pour la révélation finale, afin de ne pas vider
-    le dossier de tout suspense avant la résolution."""
+    (`is_public`) bascule automatiquement à l'heure programmée. On révèle jusqu'à 3
+    preuves en cours de partie (espacées), en gardant AU MOINS une privée pour la
+    résolution finale — le dossier épinglé est mis à jour automatiquement à chaque
+    révélation."""
     hidden = sorted(
         (e for e in evidence.values() if not e.is_public), key=lambda e: e.id
     )
-    if len(hidden) < 2:
-        return {}
-    count = min(2, len(hidden) // 2)
+    # Au moins 1 reste cachée jusqu'à la fin ; jusqu'à 3 bulletins en cours de partie.
+    count = min(3, max(0, len(hidden) - 1))
     if count <= 0:
         return {}
     total = (deadline - now).total_seconds()

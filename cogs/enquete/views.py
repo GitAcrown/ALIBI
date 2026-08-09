@@ -39,10 +39,10 @@ MSG_NO_RESOLVED = "Les archives sont vides."
 MSG_SUSPECT_MISSING = "Ce nom ne figure pas au dossier."
 
 BADGE_EMOJI = {
-    "BEST_DETECTIVE": E.e(E.BADGE_DETECTIVE),
-    "FIRST_TO_CRACK_THE_CASE": E.e(E.BADGE_FIRST),
-    "MOST_CONFIDENTLY_WRONG": E.e(E.BADGE_WRONG),
-    "WORST_ACCUSATION": E.e(E.BADGE_WORST),
+    "BEST_DETECTIVE": E.e(E.BADGE_DETECTIVE, "🏅"),
+    "FIRST_TO_CRACK_THE_CASE": E.e(E.BADGE_FIRST, "🥇"),
+    "MOST_CONFIDENTLY_WRONG": E.e(E.BADGE_WRONG, "🙈"),
+    "WORST_ACCUSATION": E.e(E.BADGE_WORST, "💀"),
 }
 
 
@@ -56,16 +56,13 @@ def _heading(code: str, text: str, level: str = "##") -> str:
     return f"{level} {prefix}{text}"
 
 
-def _time_left(case: Case) -> str:
-    remaining = case.deadline_at - datetime.now(timezone.utc)
-    secs = int(remaining.total_seconds())
-    if secs <= 0:
-        return "délai écoulé"
-    hours, rem = divmod(secs, 3600)
-    minutes = rem // 60
-    if hours > 0:
-        return f"{hours}h{minutes:02d}"
-    return f"{minutes} min"
+def _deadline_stamp(case: Case) -> str:
+    """Balise Discord de temps relatif (`<t:…:R>`) — Discord met à jour l'affichage seul
+    (« dans 2 heures », « il y a 5 minutes »), plus besoin d'Actualiser le message."""
+    ts = int(case.deadline_at.timestamp())
+    if case.deadline_at <= datetime.now(timezone.utc):
+        return f"délai écoulé (<t:{ts}:R>)"
+    return f"classement <t:{ts}:R>"
 
 
 def _portrait(slot: str, portraits_meta: dict) -> str:
@@ -193,6 +190,43 @@ class QuestionModal(discord.ui.Modal, title="Salle d'interrogatoire"):
         )
 
 
+class AccusationModal(discord.ui.Modal, title="Mise en accusation"):
+    """Demande le mobile supposé en même temps que l'accusation — un mobile deviné juste
+    ou proche du vrai rapporte un bonus de points à la résolution (voir scoring.py).
+    Champ facultatif : accuser sans mobile reste possible, juste sans bonus."""
+
+    def __init__(
+        self,
+        case_pk: int,
+        suspect_id: str,
+        suspect_name: str,
+        *,
+        existing_motive_guess: Optional[str] = None,
+    ):
+        super().__init__()
+        self.case_pk = case_pk
+        self.suspect_id = suspect_id
+        self.motive = discord.ui.TextInput(
+            label=f"Mobile supposé de {suspect_name}"[:45],
+            placeholder="Pourquoi aurait-il/elle fait ça ? (facultatif, bonus de points si juste)",
+            style=discord.TextStyle.paragraph,
+            max_length=200,
+            required=False,
+            default=existing_motive_guess or None,
+        )
+        self.add_item(self.motive)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        cog = _get_cog(interaction)
+        if cog is None:
+            return await interaction.response.send_message("Bureau hors ligne.", ephemeral=True)
+        await cog.handle_accusation(
+            interaction,
+            suspect_id=self.suspect_id,
+            motive_guess=self.motive.value.strip() or None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Selects
 # ---------------------------------------------------------------------------
@@ -284,8 +318,20 @@ class _SuspectSelect(discord.ui.Select):
             await _send_history(interaction, cog, case, suspect_id)
             return
 
-        # mode accuse
-        await cog.handle_accusation(interaction, suspect_id=suspect_id)
+        # mode accuse — le mobile deviné se saisit dans un modal (bonus de points si juste
+        # ou proche du vrai mobile, voir scoring.py). Pré-remplit avec la devinette
+        # précédente si le joueur avait déjà accusé quelqu'un (pratique en cas de correction).
+        store = cog.engine.storage_if_exists(interaction.guild)
+        existing_guess = None
+        if store is not None:
+            existing = await store.get_accusation(case.case_pk, interaction.user.id)
+            if existing is not None:
+                existing_guess = existing.motive_guess
+        await interaction.response.send_modal(
+            AccusationModal(
+                case.case_pk, suspect_id, suspect.name, existing_motive_guess=existing_guess
+            )
+        )
 
 
 async def _send_history(
@@ -455,40 +501,6 @@ class EvidenceButton(discord.ui.DynamicItem[discord.ui.Button], template=r"alibi
         await interaction.response.send_message(view=view, ephemeral=True)
 
 
-class RefreshButton(discord.ui.DynamicItem[discord.ui.Button], template=r"alibi:refresh:(?P<case_pk>[0-9]+)"):
-    def __init__(self, case_pk: int) -> None:
-        super().__init__(
-            discord.ui.Button(
-                style=discord.ButtonStyle.secondary,
-                label="Actualiser",
-                emoji=_btn_emoji(E.REFRESH),
-                custom_id=f"alibi:refresh:{case_pk}",
-            )
-        )
-        self.case_pk = case_pk
-
-    @classmethod
-    async def from_custom_id(
-        cls,
-        interaction: discord.Interaction,
-        item: discord.ui.Button,
-        match: re.Match[str],
-        /,
-    ):
-        return cls(int(match["case_pk"]))
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        cog, case = await _require_active_case(interaction)
-        if cog is None or case is None:
-            return
-        portraits = load_portraits_data()
-        view = DossierView(case, portraits)
-        try:
-            await interaction.response.edit_message(view=view)
-        except discord.HTTPException:
-            await interaction.response.send_message(view=view, ephemeral=True)
-
-
 class HistorySelect(discord.ui.DynamicItem[discord.ui.Select], template=r"alibi:history:(?P<case_pk>[0-9]+)"):
     """Select persistant du panneau Scellés — fonctionne même dans le message PUBLIC
     de `/scelles` qui reste affiché toute la partie (pas de timeout, survit au restart).
@@ -538,7 +550,6 @@ DOSSIER_DYNAMIC_ITEMS = (
     InterrogateButton,
     AccuseButton,
     EvidenceButton,
-    RefreshButton,
     HistorySelect,
 )
 
@@ -552,6 +563,9 @@ class DossierView(discord.ui.LayoutView):
 
     timeout=None + DynamicItem : boutons actifs pendant toute la partie,
     y compris 3h plus tard et après redémarrage du bot (sans re-add_view).
+
+    `closed=True` : version archive (après résolution) — même contenu, sans boutons
+    d'action (l'affaire est classée, plus rien à interroger/accuser).
     """
 
     def __init__(
@@ -560,6 +574,7 @@ class DossierView(discord.ui.LayoutView):
         portraits_meta: dict,
         *,
         ping_role: Optional[discord.Role] = None,
+        closed: bool = False,
     ):
         super().__init__(timeout=None)
         file_e = E.e(E.FILE)
@@ -572,7 +587,7 @@ class DossierView(discord.ui.LayoutView):
         # la mention du rôle notif doit vivre dans un TextDisplay (et ping via
         # allowed_mentions à l'envoi).
         children: list = []
-        if ping_role is not None:
+        if ping_role is not None and not closed:
             children.append(
                 discord.ui.TextDisplay(
                     f"{ping_role.mention} — Une nouvelle enquête démarre."
@@ -580,8 +595,10 @@ class DossierView(discord.ui.LayoutView):
             )
             children.append(discord.ui.Separator())
 
+        heading = "AFFAIRE CLASSÉE" if closed else "DOSSIER CLASSIFIÉ"
+        heading_emoji = E.CASE_CLOSED if closed else E.CLASSIFIED
         children += [
-            discord.ui.TextDisplay(_heading(E.CLASSIFIED, "DOSSIER CLASSIFIÉ")),
+            discord.ui.TextDisplay(_heading(heading_emoji, heading)),
             discord.ui.TextDisplay(f"# {case.title}"),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
@@ -601,20 +618,28 @@ class DossierView(discord.ui.LayoutView):
             discord.ui.TextDisplay(_heading(E.SUSPECT, "Personnes d'intérêt", "###")),
             discord.ui.TextDisplay(_roster_lines(case, portraits_meta)),
             discord.ui.Separator(),
-            discord.ui.TextDisplay(
-                f"-# {file_prefix}Dossier `{case.case_id}`  ·  {clock_prefix}{_time_left(case)} avant classement\n"
-                f"-# **{config.max_questions_for_case(case)}** interrogatoires / enquêteur. "
-                f"Croise les témoignages. Accuse en silence. Ne laisse rien filtrer."
-            ),
-            discord.ui.Separator(),
-            discord.ui.ActionRow(
-                StatusButton(pk),
-                InterrogateButton(pk),
-                AccuseButton(pk),
-                EvidenceButton(pk),
-                RefreshButton(pk),
-            ),
         ]
+        if closed:
+            children.append(
+                discord.ui.TextDisplay(
+                    f"-# {file_prefix}Dossier `{case.case_id}` · affaire classée · versé aux archives"
+                )
+            )
+        else:
+            children += [
+                discord.ui.TextDisplay(
+                    f"-# {file_prefix}Dossier `{case.case_id}`  ·  {clock_prefix}{_deadline_stamp(case)}\n"
+                    f"-# **{config.max_questions_for_case(case)}** interrogatoires / enquêteur. "
+                    f"Croise les témoignages. Accuse en silence. Ne laisse rien filtrer."
+                ),
+                discord.ui.Separator(),
+                discord.ui.ActionRow(
+                    StatusButton(pk),
+                    InterrogateButton(pk),
+                    AccuseButton(pk),
+                    EvidenceButton(pk),
+                ),
+            ]
         self.add_item(make_container(*children))
 
 
@@ -622,7 +647,9 @@ class EvidenceBulletinView(discord.ui.LayoutView):
     """Message public ponctuel : une preuve jusque-là privée vient d'être versée au dossier.
 
     Casse le silence d'une partie de plusieurs heures sans intervention du LLM — la preuve
-    existait déjà depuis la génération, seule sa visibilité change (la vérité ne bouge pas)."""
+    existait déjà depuis la génération, seule sa visibilité change (la vérité ne bouge pas).
+    Le dossier épinglé est mis à jour automatiquement en parallèle (voir
+    `_announce_due_evidence`)."""
 
     def __init__(self, case: Case, new_evidence: list):
         super().__init__(timeout=None)
@@ -636,7 +663,7 @@ class EvidenceBulletinView(discord.ui.LayoutView):
             discord.ui.TextDisplay(lines),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
-                "-# Consulte **Scellés** ou clique **Actualiser** sur le dossier pour le voir apparaître."
+                "-# Le dossier classifié épinglé a été mis à jour automatiquement."
             ),
         ]
         self.add_item(make_container(*children))
@@ -691,7 +718,7 @@ class EvidenceView(discord.ui.LayoutView):
             discord.ui.TextDisplay(_roster_lines(case, portraits_meta)),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
-                f"-# Dossier `{case.case_id}`  ·  {_time_left(case)} avant classement\n"
+                f"-# Dossier `{case.case_id}`  ·  {_deadline_stamp(case)}\n"
                 f"-# Rouvre un procès-verbal ci-dessous — lecture **privée**, réservée à ton badge."
             ),
             discord.ui.ActionRow(HistorySelect(case.case_pk, _suspect_options(case, portraits_meta))),
@@ -707,18 +734,21 @@ class StatusView(discord.ui.LayoutView):
         questions_left: int,
         questions_used: int,
         accused_name: Optional[str],
+        motive_guess: Optional[str] = None,
     ):
         super().__init__(timeout=120)
         clock = E.e(E.CLOCK)
         clock_prefix = f"{clock} " if clock else ""
         accuse_line = accused_name or "*(aucune accusation pour l'instant)*"
+        if accused_name and motive_guess:
+            accuse_line += f" — mobile deviné : *{motive_guess}*"
         bar_used = "█" * questions_used + "░" * questions_left
         children = [
             discord.ui.TextDisplay(_heading(E.STATUS, "Badge enquêteur")),
             discord.ui.TextDisplay(f"**{case.title}**"),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
-                f"{clock_prefix}**Délai** · {_time_left(case)}\n"
+                f"{clock_prefix}**Délai** · {_deadline_stamp(case)}\n"
                 f"**Interrogatoires** · `{bar_used}` {questions_left} restant(s)\n"
                 f"**Accusation** · {accuse_line}"
             ),
@@ -930,6 +960,7 @@ class AccusationResultView(discord.ui.LayoutView):
         *,
         suspect_age: Optional[int] = None,
         suspect_role: str = "",
+        motive_guess: Optional[str] = None,
     ):
         super().__init__(timeout=120)
         prefix = f"{suspect_emoji} " if suspect_emoji else ""
@@ -939,11 +970,17 @@ class AccusationResultView(discord.ui.LayoutView):
         if suspect_role:
             tag_bits.append(suspect_role)
         tag_suffix = f" ({', '.join(tag_bits)})" if tag_bits else ""
+        motive_line = (
+            f"**Mobile deviné** · {motive_guess}\n"
+            if motive_guess
+            else "-# Aucun mobile renseigné (bonus de points manqué, mais accusation valide).\n"
+        )
         children = [
             discord.ui.TextDisplay(_heading(E.ACCUSE, "Accusation sous scellés")),
             discord.ui.Separator(),
             discord.ui.TextDisplay(
                 f"Tu pointes **{prefix}{suspect_name}**{tag_suffix}.\n"
+                f"{motive_line}"
                 f"-# **Confidentiel.** Modifiable jusqu'au classement — bouton **Accuser…** ou `/accuser`."
             ),
         ]
@@ -980,42 +1017,45 @@ class ResolutionView(discord.ui.LayoutView):
                 f"**MOBILE** · {case.motive}\n"
                 f"**MÉTHODE** · {case.method} ({case.weapon})"
             ),
-            discord.ui.Separator(),
-            discord.ui.TextDisplay(
-                f"```\n"
-                f"LIEU     · {case.location}\n"
-                f"HEURE    · {case.time_of_death}\n"
-                f"VICTIME  · {case.victim_name}\n"
-                f"```"
-            ),
             discord.ui.TextDisplay(f"-# {case.investigation_moment}"),
         ]
 
-        correct = [r for r in results if r.correct]
-        wrong = [r for r in results if not r.correct]
+        def _fmt(rank: int, r: PlayerResult) -> str:
+            accused = case.suspects.get(r.accused_suspect_id)
+            accused_name = accused.name if accused is not None else "?"
+            verdict = "bonne piste" if r.correct else "à côté"
+            if r.motive_points >= config.MOTIVE_BONUS_EXACT:
+                motive_txt = " · mobile identifié"
+            elif r.motive_points >= config.MOTIVE_BONUS_CLOSE:
+                motive_txt = " · mobile proche"
+            elif r.motive_guess:
+                motive_txt = " · mobile à côté"
+            else:
+                motive_txt = ""
+            # Mention Discord : le send doit passer allowed_mentions=users
+            # (voir `_resolve_and_announce` / `/classer`).
+            display = get_member_name(r.player_id)
+            lines = [
+                f"**{rank}.** <@{r.player_id}> ({display}) — **{r.points} pts**",
+                f"└ a accusé **{accused_name}** · {verdict}{motive_txt}",
+            ]
+            if r.badges:
+                medals = " · ".join(
+                    f"{BADGE_EMOJI.get(b, '')} {BADGE_LABELS.get(b, b)}".strip()
+                    for b in r.badges
+                )
+                lines.append(f"└ {medals}")
+            return "\n".join(lines)
 
-        def _fmt(r: PlayerResult) -> str:
-            badges = []
-            for b in r.badges:
-                label = BADGE_LABELS.get(b, b)
-                emoji = BADGE_EMOJI.get(b, "")
-                badges.append(f"{emoji} {label}".strip())
-            badge_txt = f" — {', '.join(badges)}" if badges else ""
-            return f"• {get_member_name(r.player_id)}{badge_txt}"
-
-        if correct:
+        if results:
             children += [
                 discord.ui.Separator(),
                 discord.ui.TextDisplay("### Limiers"),
-                discord.ui.TextDisplay("\n".join(_fmt(r) for r in correct)),
+                discord.ui.TextDisplay(
+                    "\n\n".join(_fmt(i, r) for i, r in enumerate(results, start=1))
+                ),
             ]
-        if wrong:
-            children += [
-                discord.ui.Separator(),
-                discord.ui.TextDisplay("### Fausses pistes"),
-                discord.ui.TextDisplay("\n".join(_fmt(r) for r in wrong)),
-            ]
-        if not correct and not wrong:
+        else:
             children += [
                 discord.ui.Separator(),
                 discord.ui.TextDisplay("-# Personne n'a osé pointer du doigt."),
@@ -1123,5 +1163,6 @@ async def build_status_view(cog: "EnqueteCog", case: Case, player_id: int) -> St
         questions_left=max(0, qmax - asked),
         questions_used=asked,
         accused_name=accused_name,
+        motive_guess=accusation.motive_guess if accusation else None,
     )
 

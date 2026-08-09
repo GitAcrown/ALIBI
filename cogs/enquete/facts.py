@@ -41,6 +41,12 @@ def normalize_text(text: str) -> str:
     return " ".join(_normalize(text))
 
 
+def normalize_tokens(text: str) -> set[str]:
+    """Jeu de mots normalisés (sans stopwords) — utilisé pour comparer un mobile deviné
+    par un joueur au texte du mobile réel (scoring.py), sans appel LLM."""
+    return set(_normalize(text))
+
+
 class FactEngine:
     def __init__(self, case: Case):
         self.case = case

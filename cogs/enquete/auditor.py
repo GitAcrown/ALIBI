@@ -33,36 +33,27 @@ l'heure du crime dans la VRAIE timeline (pas seulement dans son alibi déclaré)
 3) pas_trop_facile — Aucune preuve publique ne nomme le coupable ni ne le désigne de façon \
 univoque. Pas d'indice « signature » qui ne peut logiquement concerner qu'UN seul suspect (ex. \
 empreinte robotique/trace d'android quand un seul non-humain est présent ; ADN nommé ; aveu \
-public ; objet personnel unique sans ambiguïté). Au moins 2 innocents restent crédiblement \
-suspects après lecture des preuves publiques seules. Le coupable n'est pas le seul suspect avec \
-un mobile, ni le seul avec un secret. ok=false aussi si le `role` du coupable EST littéralement \
-son mobile ou son statut par rapport à l'enjeu de l'affaire (ex. « L'héritier », « Le seul \
-bénéficiaire du contrat ») ALORS QU'aucun autre suspect n'a un rapport comparable à ce même enjeu \
-(héritage, promotion, parts d'une société...) — ce genre de casting désigne le coupable d'un coup \
-d'œil sur le roster, sans même interroger qui que ce soit.
+public ; objet personnel unique sans ambiguïté). Après lecture des preuves publiques SEULES, \
+AU MOINS 3 innocents restent crédiblement suspects (pas seulement 2). Le coupable n'est pas le \
+seul suspect avec un mobile, ni le seul avec un secret. ok=false aussi si le `role` du coupable \
+EST littéralement son mobile ou son statut par rapport à l'enjeu de l'affaire (ex. « L'héritier », \
+« Le seul bénéficiaire du contrat ») ALORS QU'aucun autre suspect n'a un rapport comparable à ce \
+même enjeu — ce genre de casting désigne le coupable d'un coup d'œil sur le roster.
 
 4) pas_trop_dur — Il existe un chemin de déduction CONCLUANT : en combinant preuves publiques + \
-facts accessibles via interrogatoires (known_fact_ids des suspects), un enquêteur rigoureux peut \
-identifier le coupable SANS deviner, via au moins 3 recoupements distincts (pas un ou deux \
-détails isolés) — la partie dure plusieurs heures, la déduction doit demander un vrai travail \
-d'enquête collectif, pas 5 minutes de lecture. Les key_evidence_ids et facts liés soutiennent réellement cette déduction ; \
-true_timeline_summary n'introduit pas une vérité impossible à découvrir via facts/preuves. \
-Vérifie aussi qu'il existe AU MOINS UN élément décisif du chemin de déduction qui ne figure PAS \
-dans le known_fact_ids d'un seul suspect isolé mais nécessite de recouper les témoignages d'AU \
-MOINS DEUX suspects différents (ex. l'alibi de A n'est contredit que par un fact que seul B \
-connaît, ou une preuve publique ne prend son sens qu'avec un fact détenu par B) — ça donne un \
-vrai intérêt à ce que les joueurs se partagent leurs découvertes. Sois PRAGMATIQUE ici : ok=false \
-UNIQUEMENT si un unique suspect détient dans son seul known_fact_ids la TOTALITÉ du chemin de \
-déduction, permettant de conclure sans recouper personne d'autre. Dans le doute, ou si le \
-recoupement à 2+ suspects existe mais n'est pas parfaitement optimal, ok=true — ce point ne doit \
-PAS être le prétexte à rejeter un dossier par ailleurs solide sur un détail de répartition ; \
-signale plutôt la faiblesse en note même quand ok=true, pour la garder à l'esprit sans bloquer.
-   Exemple ok=true : le fait que le coupable ait menti sur son alibi n'est démontrable qu'en \
-croisant le témoignage du suspect B (qui l'a vu ailleurs) ET une preuve publique (qui situe le \
-lieu du mensonge) — deux sources distinctes, aucune détenue seule par un suspect unique.
-   Exemple ok=false : le suspect B détient, à lui seul dans son known_fact_ids, à la fois \
-l'alibi contredit du coupable, le mobile, ET la preuve qui l'incrimine — B seul suffit à tout \
-résoudre sans qu'aucun autre suspect n'ait d'info utile.
+facts accessibles via interrogatoires (known_fact_ids des suspects), un groupe d'enquêteurs \
+rigoureux peut identifier le coupable SANS deviner, via au moins 4 recoupements distincts — la \
+partie dure plusieurs heures, la déduction doit demander un vrai travail d'enquête collectif. \
+Les key_evidence_ids et facts liés soutiennent réellement cette déduction ; true_timeline_summary \
+n'introduit pas une vérité impossible à découvrir via facts/preuves. Le recoupement décisif doit \
+exiger les témoignages d'AU MOINS TROIS suspects différents. ok=false si un ou deux suspects \
+suffisent à tout résoudre seuls. Dans le doute sur un détail mineur de répartition (mais pas sur \
+le fond « 3 suspects requis »), ok=true avec une note — ne bloque pas un dossier solide pour un \
+écart cosmétique.
+   Exemple ok=true : l'alibi du coupable n'est démontable qu'en croisant le témoignage de B, \
+un fact détenu par C, ET une preuve publique — trois sources distinctes.
+   Exemple ok=false : le suspect B détient, à lui seul, l'alibi contredit + le mobile + l'élément \
+incriminant — B seul suffit sans recouper personne d'autre.
 
 5) casting_fonctionnel — Au moins un suspect est lié à l'affaire par sa FONCTION sur le lieu \
 (personnel/autorité présent de par son poste — concierge, agent de sécurité, employé de \
