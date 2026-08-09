@@ -125,34 +125,26 @@ async def _require_active_case(interaction: discord.Interaction):
 # Modals
 # ---------------------------------------------------------------------------
 
-def _modal_case_reminder(
-    victim_name: str,
-    time_of_death: str,
-    location: str = "",
+def _modal_suspect_reminder(
+    age: Optional[int],
+    role: str = "",
     *,
-    max_len: int = 45,
+    max_len: int = 100,
 ) -> str:
-    """Rappel compact pour un TextInput Discord (label ≤ 45, placeholder ≤ 100)."""
-    victim = (victim_name or "").strip()
-    time = (time_of_death or "").strip()
-    loc = (location or "").strip()
-    candidates = []
-    if victim and time and loc:
-        candidates.append(f"{victim} · ~{time} · {loc}")
-    if victim and time:
-        candidates.append(f"{victim} · ~{time}")
-    if victim:
-        candidates.append(victim)
-    if time:
-        candidates.append(f"~{time}")
-    for text in candidates:
-        if len(text) <= max_len:
-            return text
-    # Dernier recours : tronquer le candidat le plus informatif.
-    base = candidates[0] if candidates else "Affaire en cours"
-    if len(base) <= max_len:
-        return base
-    return base[: max_len - 1] + "…"
+    """Rappel compact âge · rôle pour le placeholder du modal d'interrogatoire
+    (placeholder Discord ≤ 100)."""
+    role = (role or "").strip()
+    if age is not None and role:
+        text = f"{age} ans · {role}"
+    elif role:
+        text = role
+    elif age is not None:
+        text = f"{age} ans"
+    else:
+        return ""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
 
 
 class QuestionModal(discord.ui.Modal, title="Salle d'interrogatoire"):
@@ -162,14 +154,13 @@ class QuestionModal(discord.ui.Modal, title="Salle d'interrogatoire"):
         suspect_id: str,
         suspect_name: str,
         *,
-        victim_name: str = "",
-        time_of_death: str = "",
-        location: str = "",
+        suspect_age: Optional[int] = None,
+        suspect_role: str = "",
     ):
         super().__init__()
         self.case_pk = case_pk
         self.suspect_id = suspect_id
-        reminder = _modal_case_reminder(victim_name, time_of_death, location, max_len=100)
+        reminder = _modal_suspect_reminder(suspect_age, suspect_role, max_len=100)
         self.question = discord.ui.TextInput(
             label=f"Question à {suspect_name}",
             placeholder=reminder or "Où étiez-vous à cette heure ? / Que savez-vous de la victime ?",
@@ -307,9 +298,8 @@ class _SuspectSelect(discord.ui.Select):
                     case.case_pk,
                     suspect_id,
                     suspect.name,
-                    victim_name=case.victim_name,
-                    time_of_death=case.time_of_death,
-                    location=case.location,
+                    suspect_age=suspect.age,
+                    suspect_role=suspect.role,
                 )
             )
             return
@@ -1010,7 +1000,7 @@ class _ShareHistoryButton(discord.ui.Button):
             parent.suspect,
             parent.history,
             sharer_id=interaction.user.id,
-            sharer_name=interaction.user.display_name,
+            sharer_name=interaction.user.name,
             case_id=case.case_id,
             portraits_meta=parent.portraits_meta,
         )
@@ -1166,7 +1156,6 @@ class ResolutionView(discord.ui.LayoutView):
                 f"**MOBILE** · {case.motive}\n"
                 f"**MÉTHODE** · {case.method} ({case.weapon})"
             ),
-            discord.ui.TextDisplay(f"-# {case.investigation_moment}"),
         ]
 
         def _fmt(rank: int, r: PlayerResult) -> str:

@@ -63,9 +63,11 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         await self.client.close()
 
     def _member_name_getter(self, guild: discord.Guild):
+        """Username Discord (`name`), pas le nickname serveur — la mention affiche déjà
+        le pseudo local, le texte entre parenthèses sert à identifier le compte."""
         def _get(player_id: int) -> str:
             member = guild.get_member(player_id)
-            return member.display_name if member else f"Joueur {player_id}"
+            return member.name if member else f"joueur_{player_id}"
         return _get
 
     # ------------------------------------------------------------------
@@ -726,9 +728,8 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                     case.case_pk,
                     target.id,
                     target.name,
-                    victim_name=case.victim_name,
-                    time_of_death=case.time_of_death,
-                    location=case.location,
+                    suspect_age=target.age,
+                    suspect_role=target.role,
                 )
             )
             return
