@@ -363,19 +363,24 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         portraits_meta: dict,
     ) -> Optional[discord.Message]:
         """Publie le menu principal en NOUVEAU message (épinglé), distinct du suivi de génération."""
-        view = views.DossierView(case, portraits_meta)
-        content: Optional[str] = None
-        allowed = discord.AllowedMentions.none()
+        # Le LayoutView (Components V2) interdit le champ `content` sur le même message
+        # (erreur 50035 "cannot be used when using MessageFlags.IS_COMPONENTS_V2") : le
+        # ping du rôle Enquêteur part donc dans un message texte séparé, avant le menu.
         guild = getattr(channel, "guild", None)
         if isinstance(guild, discord.Guild):
             role = await self._ensure_enqueteur_role(guild)
             if role is not None:
-                content = role.mention
-                allowed = discord.AllowedMentions(roles=[role])
+                try:
+                    await channel.send(
+                        content=f"{role.mention} Une nouvelle enquête démarre !",
+                        allowed_mentions=discord.AllowedMentions(roles=[role]),
+                    )
+                except discord.HTTPException:
+                    logger.exception("Échec du ping notif pour %s", case.case_id)
+
+        view = views.DossierView(case, portraits_meta)
         try:
-            message = await channel.send(
-                content=content, view=view, allowed_mentions=allowed,
-            )
+            message = await channel.send(view=view)
         except discord.HTTPException:
             logger.exception("Impossible d'envoyer le menu dossier pour %s", case.case_id)
             return None
