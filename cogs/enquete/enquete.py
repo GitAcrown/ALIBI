@@ -542,10 +542,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /enquete
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="enquete", description="Ouvre un nouveau dossier (admin).")
+    @app_commands.command(name="enquete", description="Ouvre une nouvelle enquête (admin).")
     @app_commands.describe(
         contexte="Contexte optionnel pour orienter l'enquête générée.",
-        duree_minutes="Durée de l'enquête en minutes (tests / fast-forward). Défaut : 3h.",
+        duree_minutes="Durée en minutes (tests). Défaut : 3 heures.",
     )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -624,18 +624,72 @@ class EnqueteCog(commands.Cog, name="Enquete"):
             # (le menu principal est déjà un message distinct).
             pass
 
+    async def open_interrogate_picker(self, interaction: discord.Interaction) -> None:
+        """Même panneau que le bouton « Interroger… » du dossier."""
+        guild = interaction.guild
+        if guild is None:
+            return
+        store = self.engine.storage_if_exists(guild)
+        if store is None:
+            await interaction.response.send_message(
+                view=views.ErrorView("Aucun dossier ouvert ici."), ephemeral=True
+            )
+            return
+        case = await store.get_active_case()
+        if case is None or case.status != "active":
+            await interaction.response.send_message(
+                view=views.ErrorView("Aucun dossier ouvert ici."), ephemeral=True
+            )
+            return
+        asked = await store.count_player_questions(case.case_pk, interaction.user.id)
+        qmax = config.max_questions_for_case(case)
+        if asked >= qmax:
+            await interaction.response.send_message(
+                f"Tes crédits d'interrogatoire sont épuisés ({qmax}).",
+                ephemeral=True,
+            )
+            return
+        portraits = load_portraits_data()
+        view = views.SuspectPickerView(
+            case, portraits, mode="interrogate", questions_left=qmax - asked,
+        )
+        await interaction.response.send_message(view=view, ephemeral=True)
+
     # ------------------------------------------------------------------
     # /interroger
     # ------------------------------------------------------------------
 
     @app_commands.command(
         name="interroger",
-        description="Convoque un témoin (autant d'interrogatoires que de suspects).",
+        description="Interroge un suspect. Sans argument : ouvre le menu.",
     )
-    @app_commands.describe(suspect="Nom du suspect à interroger.", question="Ta question.")
+    @app_commands.describe(
+        suspect="Suspect à interroger (laisse vide pour ouvrir le menu).",
+        question="Ta question (si un suspect est précisé).",
+    )
     @app_commands.autocomplete(suspect=suspect_autocomplete)
     @app_commands.guild_only()
-    async def interroger(self, interaction: discord.Interaction, suspect: str, question: str) -> None:
+    async def interroger(
+        self,
+        interaction: discord.Interaction,
+        suspect: Optional[str] = None,
+        question: Optional[str] = None,
+    ) -> None:
+        suspect = (suspect or "").strip() or None
+        question = (question or "").strip() or None
+
+        if suspect is None:
+            if question is not None:
+                await interaction.response.send_message(
+                    view=views.ErrorView(
+                        "Précise un suspect, ou lance `/interroger` sans argument pour le menu."
+                    ),
+                    ephemeral=True,
+                )
+                return
+            await self.open_interrogate_picker(interaction)
+            return
+
         guild = interaction.guild
         assert guild is not None
         store = self.engine.storage_if_exists(guild)
@@ -656,13 +710,39 @@ class EnqueteCog(commands.Cog, name="Enquete"):
                 view=views.ErrorView(f"`{suspect}` ne figure pas au dossier."), ephemeral=True
             )
             return
+
+        if question is None:
+            # Suspect seul → même modal que le sélecteur du bouton Interroger.
+            asked = await store.count_player_questions(case.case_pk, interaction.user.id)
+            qmax = config.max_questions_for_case(case)
+            if asked >= qmax:
+                await interaction.response.send_message(
+                    f"Tes crédits d'interrogatoire sont épuisés ({qmax}).",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(
+                views.QuestionModal(
+                    case.case_pk,
+                    target.id,
+                    target.name,
+                    victim_name=case.victim_name,
+                    time_of_death=case.time_of_death,
+                    location=case.location,
+                )
+            )
+            return
+
         await self.handle_interrogation(interaction, suspect_id=target.id, question=question)
 
     # ------------------------------------------------------------------
     # /accuser
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="accuser", description="Pointe un coupable sous scellés (modifiable).")
+    @app_commands.command(
+        name="accuser",
+        description="Accuse un suspect et indique son mobile (modifiable).",
+    )
     @app_commands.describe(suspect="Le suspect que tu accuses.")
     @app_commands.autocomplete(suspect=suspect_autocomplete)
     @app_commands.guild_only()
@@ -699,7 +779,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /scelles — équivalent slash du bouton « Scellés »
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="scelles", description="Consulte les scellés publics et les personnes d'intérêt.")
+    @app_commands.command(
+        name="scelles",
+        description="Scellés publics, roster et tes procès-verbaux.",
+    )
     @app_commands.guild_only()
     async def scelles(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -721,7 +804,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
 
     @app_commands.command(
         name="notif",
-        description="Reçois (ou coupe) une alerte quand une nouvelle enquête démarre.",
+        description="Active ou coupe les alertes de nouvelle enquête.",
     )
     @app_commands.guild_only()
     async def notif(self, interaction: discord.Interaction) -> None:
@@ -782,7 +865,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /badge — équivalent slash du bouton « Mon badge »
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="badge", description="Consulte ton badge enquêteur.")
+    @app_commands.command(
+        name="badge",
+        description="Ton badge : crédits restants et accusation en cours.",
+    )
     @app_commands.guild_only()
     async def badge(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -801,7 +887,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /classer — clôture l'affaire (ton "dossier classé" de l'archive)
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="classer", description="Classe l'affaire immédiatement (admin).")
+    @app_commands.command(
+        name="classer",
+        description="Clôture l'enquête en cours immédiatement (admin).",
+    )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def classer(self, interaction: discord.Interaction) -> None:
@@ -830,7 +919,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /palmares
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="palmares", description="Bilan de la dernière affaire classée.")
+    @app_commands.command(
+        name="palmares",
+        description="Résultat détaillé de la dernière affaire classée.",
+    )
     @app_commands.guild_only()
     async def palmares(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -861,7 +953,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /historique
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="historique", description="Parcourt les archives des affaires classées.")
+    @app_commands.command(
+        name="historique",
+        description="Liste des affaires classées sur ce serveur.",
+    )
     @app_commands.guild_only()
     async def historique(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -876,7 +971,10 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     # /portraits_setup
     # ------------------------------------------------------------------
 
-    @app_commands.command(name="portraits_setup", description="Upload les 12 portraits comme emojis d'application (admin).")
+    @app_commands.command(
+        name="portraits_setup",
+        description="Enregistre les portraits comme emojis d'app (admin).",
+    )
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def portraits_setup(self, interaction: discord.Interaction) -> None:

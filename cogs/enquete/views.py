@@ -433,24 +433,7 @@ class InterrogateButton(discord.ui.DynamicItem[discord.ui.Button], template=r"al
         cog, case = await _require_active_case(interaction)
         if cog is None or case is None:
             return
-        store = cog.engine.storage_if_exists(interaction.guild)
-        if store is None:
-            return await interaction.response.send_message(
-                MSG_NO_ACTIVE, ephemeral=True
-            )
-        asked = await store.count_player_questions(case.case_pk, interaction.user.id)
-        qmax = config.max_questions_for_case(case)
-        if asked >= qmax:
-            return await interaction.response.send_message(
-                f"Tes crédits d'interrogatoire sont épuisés ({qmax}).",
-                ephemeral=True,
-            )
-        portraits = load_portraits_data()
-        view = SuspectPickerView(
-            case, portraits, mode="interrogate",
-            questions_left=qmax - asked,
-        )
-        await interaction.response.send_message(view=view, ephemeral=True)
+        await cog.open_interrogate_picker(interaction)
 
 
 class AccuseButton(discord.ui.DynamicItem[discord.ui.Button], template=r"alibi:accuse:(?P<case_pk>[0-9]+)"):
