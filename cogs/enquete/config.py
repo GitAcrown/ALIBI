@@ -110,6 +110,10 @@ CORRECT_ACCUSATION_POINTS = 3
 # Timer de résolution automatique
 RESOLUTION_CHECK_INTERVAL_MINUTES = 1
 
+# Planning automatique — créneaux quotidiens (fuseau pour l'heure affichée / de déclenchement).
+SCHEDULE_TIMEZONE = "Europe/Paris"
+SCHEDULE_CHECK_INTERVAL_MINUTES = 1
+
 PORTRAITS_DATA_PATH = "assets/portraits_data.json"
 PORTRAITS_DIR = "assets/portraits"
 

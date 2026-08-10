@@ -156,3 +156,32 @@ class PlayerResult:
     motive_points: int = 0
     # Total : points accusation correcte + bonus mobile (voir scoring.compute_results).
     points: int = 0
+
+
+@dataclass
+class Schedule:
+    """Créneau quotidien de lancement automatique d'enquête."""
+
+    id: int
+    guild_id: int
+    channel_id: int
+    hour: int
+    minute: int
+    duration_minutes: int
+    enabled: bool
+    context_prompt: str
+    last_fired_date: Optional[str]  # YYYY-MM-DD (fuseau SCHEDULE_TIMEZONE)
+    created_at: datetime
+
+    @property
+    def time_label(self) -> str:
+        return f"{self.hour:02d}:{self.minute:02d}"
+
+    @property
+    def duration_label(self) -> str:
+        h, m = divmod(self.duration_minutes, 60)
+        if h and m:
+            return f"{h}h{m:02d}"
+        if h:
+            return f"{h}h"
+        return f"{m} min"

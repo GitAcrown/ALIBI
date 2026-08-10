@@ -14,10 +14,10 @@ from utils.fuzzy import find as fuzzy_find, finder as fuzzy_finder
 
 from common.llm.client import LLMClient
 
-from . import config, response_validator, views
+from . import config, planning, response_validator, views
 from .engine import CaseAlreadyActive, CaseEngine, GenerationFailed
 from .facts import FactEngine, normalize_text
-from .models import Case, Suspect
+from .models import Case, Schedule, Suspect
 from .portraits import load_portraits_data, setup_portrait_emojis
 from .question_analyzer import find_duplicate
 from .storage import fail_all_generating_cases_sync, iter_guild_ids_with_data
@@ -44,6 +44,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         self.client = LLMClient(api_key or "")
         self.engine = CaseEngine(self.client)
         self.resolution_loop.start()
+        self.schedule_loop.start()
 
     async def cog_load(self) -> None:
         # Génération interrompue par un redémarrage → libère le verrou serveur.
@@ -56,6 +57,7 @@ class EnqueteCog(commands.Cog, name="Enquete"):
 
     async def cog_unload(self) -> None:
         self.resolution_loop.cancel()
+        self.schedule_loop.cancel()
         try:
             self.bot.remove_dynamic_items(*views.DOSSIER_DYNAMIC_ITEMS)
         except Exception:
@@ -374,6 +376,158 @@ class EnqueteCog(commands.Cog, name="Enquete"):
     async def _before_resolution_loop(self) -> None:
         await self.bot.wait_until_ready()
 
+    # ------------------------------------------------------------------
+    # Planning automatique (créneaux quotidiens)
+    # ------------------------------------------------------------------
+
+    @tasks.loop(minutes=config.SCHEDULE_CHECK_INTERVAL_MINUTES)
+    async def schedule_loop(self) -> None:
+        now = planning.local_now()
+        for guild_id in iter_guild_ids_with_data():
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            try:
+                store = self.engine.storage_if_exists(guild)
+                if store is None:
+                    continue
+                for sched in await store.list_enabled_schedules():
+                    if not planning.is_due(sched, now):
+                        continue
+                    await self._fire_schedule(guild, sched)
+            except Exception:
+                logger.exception("Erreur planning auto (serveur %s)", guild_id)
+
+    @schedule_loop.before_loop
+    async def _before_schedule_loop(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _fire_schedule(self, guild: discord.Guild, sched: Schedule) -> None:
+        """Déclenche un créneau : marque le jour puis lance (ou saute si affaire en cours)."""
+        store = self.engine.storage(guild)
+        today = planning.local_now().date().isoformat()
+        # Marqué AVANT le lancement pour ne pas retenter chaque minute en cas d'échec long.
+        await store.mark_schedule_fired(sched.id, today)
+
+        channel = guild.get_channel(sched.channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(sched.channel_id)
+            except discord.HTTPException:
+                logger.warning(
+                    "Planning %s : salon %s introuvable — créneau sauté",
+                    sched.id, sched.channel_id,
+                )
+                return
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            logger.warning("Planning %s : salon %s non textuel", sched.id, sched.channel_id)
+            return
+
+        active = await store.get_active_case()
+        if active is not None:
+            logger.info(
+                "Planning %s (%s) sauté : affaire %s déjà ouverte",
+                sched.id, sched.time_label, active.case_id,
+            )
+            try:
+                await channel.send(
+                    view=views.ErrorView(
+                        f"Créneau **{sched.time_label}** sauté — une affaire est déjà en cours "
+                        f"(`{active.case_id}`). Classe-la avant le prochain créneau."
+                    )
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        logger.info(
+            "Planning %s : lancement auto %s · %s · salon %s",
+            sched.id, sched.time_label, sched.duration_label, sched.channel_id,
+        )
+        await self._launch_case_in_channel(
+            guild,
+            channel,
+            contexte=sched.context_prompt,
+            duration_minutes=sched.duration_minutes,
+        )
+
+    async def _launch_case_in_channel(
+        self,
+        guild: discord.Guild,
+        channel: discord.TextChannel | discord.Thread,
+        *,
+        contexte: str = "",
+        duration_minutes: Optional[int] = None,
+    ) -> Optional[Case]:
+        """Génère + publie un dossier dans `channel` (slash `/enquete` ou planning auto)."""
+        progress = await channel.send(view=views.GeneratingView())
+        portraits_meta = load_portraits_data()
+
+        async def _on_progress(attempt: int, total: int, note: str) -> None:
+            try:
+                await progress.edit(
+                    view=views.GeneratingView(attempt=attempt, total=total, note=note)
+                )
+            except discord.HTTPException:
+                pass
+
+        try:
+            case = await self.engine.start_case(
+                guild,
+                channel.id,
+                contexte or "",
+                portraits_meta,
+                duration_minutes=duration_minutes,
+                progress_cb=_on_progress,
+            )
+        except CaseAlreadyActive:
+            try:
+                await progress.edit(
+                    view=views.ErrorView(
+                        "Un dossier est déjà ouvert ici. Classe-le avec `/classer` avant d'en ouvrir un autre."
+                    )
+                )
+            except discord.HTTPException:
+                pass
+            return None
+        except GenerationFailed as e:
+            detail = "\n".join(f"- {issue}" for issue in e.attempts_log[-8:]) or "(aucune note)"
+            try:
+                await progress.edit(
+                    view=views.ErrorView(
+                        "Le bureau a rejeté le dossier après plusieurs relectures.\n"
+                        f"**Anomalies relevées :**\n{detail}"
+                    )
+                )
+            except discord.HTTPException:
+                pass
+            return None
+        except Exception as e:
+            logger.exception("Erreur lancement enquête (salon %s)", channel.id)
+            try:
+                store = self.engine.storage_if_exists(guild)
+                if store is not None:
+                    await store.fail_generating_cases()
+            except Exception:
+                pass
+            try:
+                await progress.edit(
+                    view=views.ErrorView(
+                        f"Incident au bureau pendant la constitution du dossier.\n"
+                        f"`{type(e).__name__}: {e}`"
+                    )
+                )
+            except discord.HTTPException:
+                pass
+            return None
+
+        await self._publish_dossier_menu(channel, case, portraits_meta)
+        try:
+            await progress.delete()
+        except discord.HTTPException:
+            pass
+        return case
+
     async def _ensure_enqueteur_role(self, guild: discord.Guild) -> Optional[discord.Role]:
         """Résout le rôle Enquêteur : ID .env si présent, sinon rôle nommé (créé au besoin)."""
         override_id = config.notif_role_id(getattr(self.bot, "config", None))
@@ -560,71 +714,28 @@ class EnqueteCog(commands.Cog, name="Enquete"):
         await interaction.response.defer(thinking=True)
         guild = interaction.guild
         assert guild is not None
-
-        progress = await interaction.followup.send(view=views.GeneratingView(), wait=True)
-        portraits_meta = load_portraits_data()
-
-        async def _on_progress(attempt: int, total: int, note: str) -> None:
-            try:
-                await progress.edit(view=views.GeneratingView(attempt=attempt, total=total, note=note))
-            except discord.HTTPException:
-                pass
-
-        try:
-            case = await self.engine.start_case(
-                guild,
-                interaction.channel_id,
-                contexte or "",
-                portraits_meta,
-                duration_minutes=duree_minutes,
-                progress_cb=_on_progress,
-            )
-        except CaseAlreadyActive:
-            await progress.edit(
-                view=views.ErrorView(
-                    "Un dossier est déjà ouvert ici. Classe-le avec `/classer` avant d'en ouvrir un autre."
-                )
-            )
-            return
-        except GenerationFailed as e:
-            detail = "\n".join(f"- {issue}" for issue in e.attempts_log[-8:]) or "(aucune note)"
-            await progress.edit(
-                view=views.ErrorView(
-                    "Le bureau a rejeté le dossier après plusieurs relectures.\n"
-                    f"**Anomalies relevées :**\n{detail}"
-                )
-            )
-            return
-        except Exception as e:
-            logger.exception("Erreur inattendue lors de la génération de l'enquête")
-            # Libère le verrou generating si le moteur n'a pas pu le faire.
-            try:
-                store = self.engine.storage_if_exists(guild)
-                if store is not None:
-                    await store.fail_generating_cases()
-            except Exception:
-                pass
-            await progress.edit(
-                view=views.ErrorView(
-                    f"Incident au bureau pendant la constitution du dossier.\n`{type(e).__name__}: {e}`"
-                )
-            )
-            return
-
         channel = interaction.channel
         if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            await progress.edit(
-                view=views.ErrorView("Ce local ne permet pas d'afficher le dossier.")
+            await interaction.followup.send(
+                view=views.ErrorView("Ce local ne permet pas d'afficher le dossier."),
+                ephemeral=True,
             )
             return
+        await self._launch_case_in_channel(
+            guild, channel, contexte=contexte or "", duration_minutes=duree_minutes,
+        )
 
-        await self._publish_dossier_menu(channel, case, portraits_meta)
-        try:
-            await progress.delete()
-        except discord.HTTPException:
-            # Si la suppression échoue, on laisse le suivi de génération tel quel
-            # (le menu principal est déjà un message distinct).
-            pass
+    @app_commands.command(
+        name="planning",
+        description="Programme des enquêtes quotidiennes à heure fixe (admin).",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def planning_cmd(self, interaction: discord.Interaction) -> None:
+        view = await planning.build_planning_view(interaction)
+        if view is None:
+            return
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     async def open_interrogate_picker(self, interaction: discord.Interaction) -> None:
         """Même panneau que le bouton « Interroger… » du dossier."""

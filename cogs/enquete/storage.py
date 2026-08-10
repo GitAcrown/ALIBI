@@ -30,6 +30,7 @@ from .models import (
     Interrogation,
     Lie,
     PlayerResult,
+    Schedule,
     Suspect,
     TimelineEntry,
 )
@@ -167,6 +168,21 @@ CASE_SUMMARIES_TABLE = TableBuilder(
     )"""
 )
 
+SCHEDULES_TABLE = TableBuilder(
+    """CREATE TABLE IF NOT EXISTS schedules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        hour INTEGER NOT NULL,
+        minute INTEGER NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        context_prompt TEXT NOT NULL DEFAULT '',
+        last_fired_date TEXT,
+        created_at TEXT NOT NULL
+    )"""
+)
+
 ALL_TABLES = (
     CASES_TABLE,
     FACTS_TABLE,
@@ -176,6 +192,7 @@ ALL_TABLES = (
     ACCUSATIONS_TABLE,
     RESULTS_TABLE,
     CASE_SUMMARIES_TABLE,
+    SCHEDULES_TABLE,
 )
 
 
@@ -691,6 +708,109 @@ class EnqueteStorage:
             guild_id, limit,
         )
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Planning automatique (créneaux quotidiens)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_schedule(row) -> Schedule:
+        return Schedule(
+            id=row["id"],
+            guild_id=row["guild_id"],
+            channel_id=row["channel_id"],
+            hour=row["hour"],
+            minute=row["minute"],
+            duration_minutes=row["duration_minutes"],
+            enabled=bool(row["enabled"]),
+            context_prompt=row["context_prompt"] or "",
+            last_fired_date=row["last_fired_date"],
+            created_at=_parse_dt(row["created_at"]),
+        )
+
+    async def list_schedules(self) -> list[Schedule]:
+        await self._ensure_migrated()
+        rows = await self._db.fetchall(
+            "SELECT * FROM schedules WHERE guild_id=? ORDER BY hour, minute, id",
+            self.guild_id,
+        )
+        return [self._row_to_schedule(r) for r in rows]
+
+    async def list_enabled_schedules(self) -> list[Schedule]:
+        await self._ensure_migrated()
+        rows = await self._db.fetchall(
+            "SELECT * FROM schedules WHERE guild_id=? AND enabled=1 ORDER BY hour, minute, id",
+            self.guild_id,
+        )
+        return [self._row_to_schedule(r) for r in rows]
+
+    async def get_schedule(self, schedule_id: int) -> Optional[Schedule]:
+        await self._ensure_migrated()
+        row = await self._db.fetchone(
+            "SELECT * FROM schedules WHERE id=? AND guild_id=?",
+            schedule_id, self.guild_id,
+        )
+        return self._row_to_schedule(row) if row else None
+
+    async def add_schedule(
+        self,
+        *,
+        channel_id: int,
+        hour: int,
+        minute: int,
+        duration_minutes: int,
+        context_prompt: str = "",
+        enabled: bool = True,
+    ) -> Schedule:
+        await self._ensure_migrated()
+        now = _now_iso()
+        await self._db.execute(
+            """INSERT INTO schedules (
+                guild_id, channel_id, hour, minute, duration_minutes, enabled,
+                context_prompt, last_fired_date, created_at
+            ) VALUES (?,?,?,?,?,?,?,NULL,?)""",
+            self.guild_id, channel_id, hour, minute, duration_minutes,
+            int(enabled), context_prompt or "", now,
+        )
+        row = await self._db.fetchone(
+            "SELECT * FROM schedules WHERE guild_id=? ORDER BY id DESC LIMIT 1",
+            self.guild_id,
+        )
+        return self._row_to_schedule(row)
+
+    async def set_schedule_enabled(self, schedule_id: int, enabled: bool) -> Optional[Schedule]:
+        await self._ensure_migrated()
+        await self._db.execute(
+            "UPDATE schedules SET enabled=? WHERE id=? AND guild_id=?",
+            int(enabled), schedule_id, self.guild_id,
+        )
+        return await self.get_schedule(schedule_id)
+
+    async def set_schedule_channel(self, schedule_id: int, channel_id: int) -> Optional[Schedule]:
+        await self._ensure_migrated()
+        await self._db.execute(
+            "UPDATE schedules SET channel_id=? WHERE id=? AND guild_id=?",
+            channel_id, schedule_id, self.guild_id,
+        )
+        return await self.get_schedule(schedule_id)
+
+    async def mark_schedule_fired(self, schedule_id: int, local_date: str) -> None:
+        await self._ensure_migrated()
+        await self._db.execute(
+            "UPDATE schedules SET last_fired_date=? WHERE id=? AND guild_id=?",
+            local_date, schedule_id, self.guild_id,
+        )
+
+    async def delete_schedule(self, schedule_id: int) -> bool:
+        await self._ensure_migrated()
+        before = await self.get_schedule(schedule_id)
+        if before is None:
+            return False
+        await self._db.execute(
+            "DELETE FROM schedules WHERE id=? AND guild_id=?",
+            schedule_id, self.guild_id,
+        )
+        return True
 
 
 def guild_db_path(guild_id: int) -> Path:
